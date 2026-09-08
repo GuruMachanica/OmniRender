@@ -235,11 +235,20 @@ static void TestHistoryRotationAndInvalidation(D3D11GraphicsDevice& dev, FrameCo
 
 // 5. Validate Runtime Pipeline End-to-End
 static void TestRuntimePipelineExecution(D3D11GraphicsDevice& dev, FrameContext& fc) {
-    Pipeline pipeline;
-    assert(pipeline.Initialize(dev, { 1920, 1080 }, { 2560, 1440 },
-                              TextureFormat::R8G8B8A8_UNORM, TextureFormat::R32_FLOAT));
-
     auto dlss_backend = std::make_shared<DlssReconstructionBackend>();
+    dlss_backend->Initialize(dev, { 1920, 1080 }, { 2560, 1440 });
+
+    // History color is allocated at the *output* resolution and CommitFrame
+    // rejects copies whose size differs. Without an upscaler (WARP or other
+    // vendors) the frame color stays at input resolution, so the pipeline must
+    // use output == input in that case; the true 1440p path only runs on
+    // NVIDIA hardware where the DLSS backend actually upscales.
+    const bool nvidia = dlss_backend->IsNvidiaHardware();
+    const Resolution output_res = nvidia ? Resolution{ 2560, 1440 } : Resolution{ 1920, 1080 };
+
+    Pipeline pipeline;
+    assert(pipeline.Initialize(dev, { 1920, 1080 }, output_res,
+                              TextureFormat::R8G8B8A8_UNORM, TextureFormat::R32_FLOAT));
     pipeline.SetReconstructionBackend(dlss_backend);
 
     auto cmd = dev.GetImmediateContext();

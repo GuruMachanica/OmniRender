@@ -124,12 +124,16 @@ static void TestRenderGraphTopologicalScheduling() {
     RenderGraph graph;
     std::vector<const char*> execution_order;
 
-    graph.AddPass(PassType::Disocclusion, "Disocclusion", { true, true, false, false },
-                  ResourceAccess::ReadDepth | ResourceAccess::ReadMotion, ResourceAccess::WriteDisocc,
-                  [&](FrameContext&) { execution_order.push_back("Disocclusion"); return true; });
+    // Register the producer before its consumer. A graph edge can only be
+    // satisfied in one direction: Disocclusion reads Motion, which the Motion
+    // pass writes, so Motion must be scheduled first (RAW edge). Registering
+    // Disocclusion first would additionally create a WAR edge and a cycle.
     graph.AddPass(PassType::MotionReproject, "MotionReproject", { true, false, false, false },
                   ResourceAccess::ReadDepth, ResourceAccess::WriteMotion,
                   [&](FrameContext&) { execution_order.push_back("MotionReproject"); return true; });
+    graph.AddPass(PassType::Disocclusion, "Disocclusion", { true, true, false, false },
+                  ResourceAccess::ReadDepth | ResourceAccess::ReadMotion, ResourceAccess::WriteDisocc,
+                  [&](FrameContext&) { execution_order.push_back("Disocclusion"); return true; });
 
     assert(graph.Compile());
 
