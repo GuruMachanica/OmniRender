@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include "../modules/common/frame_context.h"
 #include "../modules/common/backend_capabilities.h"
@@ -136,7 +137,10 @@ static void TestRenderGraphTopologicalScheduling() {
     ctx.validity.color_valid = ctx.validity.depth_valid = ctx.validity.motion_valid = true;
     assert(graph.Execute(ctx));
     assert(execution_order.size() == 2);
-    assert(execution_order[0] == "MotionReproject" && execution_order[1] == "Disocclusion");
+    // Compare content, not string-literal addresses (which assert() only
+    // type-checks in Debug builds and would otherwise be UB in both).
+    assert(std::strcmp(execution_order[0], "MotionReproject") == 0);
+    assert(std::strcmp(execution_order[1], "Disocclusion") == 0);
     printf("[PASS] TestRenderGraphTopologicalScheduling\n");
 }
 
@@ -161,12 +165,15 @@ static void TestDlssAdapterExecution() {
     assert(!adapter.Execute(invalid_ctx));
     assert(adapter.GetState() == DlssState::InputInvalid);
 
-    // Valid inputs: test parameter binding
+    // Valid inputs: test parameter binding. DlssEvaluationParams stores native
+    // ID3D11Resource* pointers, so the probe resource must be typed as such
+    // (assert() only type-checks its arguments in Debug builds).
     FrameContext ctx{};
     int dummy = 1;
-    ctx.color.resource = &dummy;
-    ctx.depth.resource = &dummy;
-    ctx.motion.resource = &dummy;
+    ID3D11Resource* dummy_res = reinterpret_cast<ID3D11Resource*>(&dummy);
+    ctx.color.resource = dummy_res;
+    ctx.depth.resource = dummy_res;
+    ctx.motion.resource = dummy_res;
     ctx.color.source = DataSource::HookExtracted;
     ctx.validity.color_valid = ctx.validity.depth_valid = ctx.validity.motion_valid = true;
     ctx.resolution.input_width = 1280;
@@ -179,7 +186,7 @@ static void TestDlssAdapterExecution() {
     DlssEvaluationParams params{};
     assert(adapter.BindFrameContextParameters(ctx, params));
     assert(adapter.GetState() == DlssState::ParametersBound);
-    assert(params.in_color == &dummy && params.depth == &dummy && params.motion == &dummy);
+    assert(params.in_color == dummy_res && params.depth == dummy_res && params.motion == dummy_res);
     assert(params.render_width == 1280 && params.target_width == 1920);
     assert(params.jitter_offset_x == 0.25f && params.jitter_offset_y == -0.5f);
 

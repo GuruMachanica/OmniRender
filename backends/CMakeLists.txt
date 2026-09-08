@@ -10,6 +10,12 @@ if(WIN32)
         reconstruction/dlss/DlssReconstructionBackend.h
         reconstruction/dlss/DlssReconstructionBackend.cpp
     )
+else()
+    # Vendor SDK backends are Windows-only. Keep the static library non-empty
+    # so archivers that reject zero-member archives (macOS ar) still succeed.
+    list(APPEND BACKENDS_SOURCES
+        platform_stub.cpp
+    )
 endif()
 
 add_library(OmniRenderBackends STATIC ${BACKENDS_SOURCES})
