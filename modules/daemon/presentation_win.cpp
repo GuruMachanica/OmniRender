@@ -16,6 +16,7 @@
 #include "interop_d3d11.h"
 #include "ipc_server.h"
 #include "pipeline.h"
+#include "pipeline_runtime.h"
 #include "presentation_win.h"
 #include "processing.h"
 
@@ -180,11 +181,19 @@ int RunPresentationLoop() {
             omnirender::FenceWait waiter;
             waiter.WaitForFence(*slot, slot->payload.frame_index, 100);
 
+#ifndef OMNIRENDER_LEGACY_PIPELINE
+            if (RuntimePipelineReady()) {
+                if (NewPipelineFrame(*slot) < 0) RunPassthroughFrame(*slot);
+            } else {
+                RunPassthroughFrame(*slot);
+            }
+#else
             if (PipelineReady()) {
                 if (RunPipelineFrame(*slot) < 0) RunPassthroughFrame(*slot);
             } else {
                 RunPassthroughFrame(*slot);
             }
+#endif
 
             if (IsHudVisible() && Context() && g_rtv) {
                 Context()->OMSetRenderTargets(1, &g_rtv, nullptr);

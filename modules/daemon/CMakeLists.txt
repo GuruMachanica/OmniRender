@@ -3,6 +3,10 @@
 
 add_executable(OmniRenderDaemon
     main.cpp
+    capture_adapter.h
+    capture_adapter.cpp
+    pipeline_runtime.h
+    pipeline_runtime.cpp
     capability_matrix.cpp
     frame_profiler.cpp
     hw_negotiator.cpp
@@ -29,11 +33,16 @@ add_executable(OmniRenderDaemon
 
 target_include_directories(OmniRenderDaemon PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/modules/shaders)
 
 target_link_libraries(OmniRenderDaemon
     PRIVATE
-        omnirender::common)
+        omnirender::common
+        omnirender::core
+        omnirender::graphics
+        omnirender::backends
+        omnirender::runtime)
 
 if(MSVC)
     target_compile_options(OmniRenderDaemon PRIVATE /W4)

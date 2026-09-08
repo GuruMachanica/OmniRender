@@ -33,6 +33,7 @@
 #include "../common/logging.h"
 #include "capability_matrix.h"
 #include "interop_d3d11.h"
+#include "pipeline_runtime.h"
 
 extern "C" {
     __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
@@ -167,7 +168,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
         OMNI_LOG_WARN("Pipeline init failed (%d); running passthrough only", pipe_rc);
     }
 
+#ifndef OMNIRENDER_LEGACY_PIPELINE
+    if (!omnirender::daemon::InitializeRuntimePipeline()) {
+        OMNI_LOG_WARN("Runtime pipeline init failed; new temporal path unavailable");
+    }
+#endif
+
     const int rc = omnirender::daemon::RunPresentationLoop();
+#ifndef OMNIRENDER_LEGACY_PIPELINE
+    omnirender::daemon::ShutdownRuntimePipeline();
+#endif
     omnirender::daemon::ShutdownPipeline();
     omnirender::daemon::ShutdownIpcServer();
     OMNI_LOG_INFO("OmniRender daemon exiting (%d)", rc);
