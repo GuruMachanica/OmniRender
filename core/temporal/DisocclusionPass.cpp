@@ -4,6 +4,9 @@
 // CPU path: per-pixel depth delta into staging buffer, uploaded via UploadTextureData.
 #include "DisocclusionPass.h"
 #include <fstream>
+#if defined(_WIN32)
+#include <d3d11.h>  // ID3D11Device / ID3D11ComputeShader (optional GPU accelerator)
+#endif
 #include "ShaderPath.h"
 #include "../../graphics/abstraction/IGraphicsDevice.h"
 #include "../../graphics/abstraction/ICommandContext.h"
@@ -30,7 +33,8 @@ bool DisocclusionPass::Initialize(graphics::IGraphicsDevice& device,
     if (!tex) return false;
     output_disocc_ = GpuTexture(std::move(tex));
 
-    BufferDesc cb_desc{ sizeof(ReprojectionCB), BufferUsage::ConstantBuffer, "DisocclusionCB" };
+    // byte_width, stride_bytes (0 for constant buffers), usage, debug_name
+    BufferDesc cb_desc{ sizeof(ReprojectionCB), 0, BufferUsage::ConstantBuffer, "DisocclusionCB" };
     cb_buffer_ = device.CreateBuffer(cb_desc, nullptr);
 
     // Optional GPU accelerator. Must be compiled from shaders/temporal/Disocclusion.hlsl
@@ -43,6 +47,7 @@ bool DisocclusionPass::Initialize(graphics::IGraphicsDevice& device,
         cso.seekg(0);
         std::vector<char> blob(sz);
         cso.read(blob.data(), static_cast<std::streamsize>(sz));
+#if defined(_WIN32)
         void* native_dev = device.GetNativeDevice();
         if (native_dev) {
             ID3D11Device* d3d = static_cast<ID3D11Device*>(native_dev);
@@ -50,6 +55,7 @@ bool DisocclusionPass::Initialize(graphics::IGraphicsDevice& device,
             if (SUCCEEDED(d3d->CreateComputeShader(blob.data(), sz, nullptr, &cs)))
                 gpu_shader_ = cs;
         }
+#endif
     }
     // Always allocate CPU scratch so the uniform-mask fallback never touches an
     // empty buffer, regardless of GPU-path availability.
@@ -58,7 +64,12 @@ bool DisocclusionPass::Initialize(graphics::IGraphicsDevice& device,
 }
 
 void DisocclusionPass::Shutdown() {
-    if (gpu_shader_) { static_cast<IUnknown*>(gpu_shader_)->Release(); gpu_shader_ = nullptr; }
+    if (gpu_shader_) {
+#if defined(_WIN32)
+        static_cast<IUnknown*>(gpu_shader_)->Release();
+#endif
+        gpu_shader_ = nullptr;
+    }
     output_disocc_.Reset();
     cb_buffer_.reset();
     cpu_pixels_.clear();

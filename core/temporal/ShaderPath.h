@@ -6,11 +6,14 @@
 // running executable rather than the working directory.
 #pragma once
 
+#include <string>
+
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#include <string>
+#endif
 
 namespace omnirender::core::temporal {
 
@@ -19,6 +22,7 @@ namespace omnirender::core::temporal {
 // Falls back to the working directory if the executable path cannot be
 // determined, so in-source dev builds still work.
 inline std::string GetShaderPath(const char* filename) {
+#if defined(_WIN32)
     char exe_path[MAX_PATH] = {};
     DWORD len = ::GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
     if (len == 0 || len >= MAX_PATH) return filename; // fallback
@@ -31,6 +35,12 @@ inline std::string GetShaderPath(const char* filename) {
         path.clear();
 
     return path + filename;
+#else
+    // Non-Windows build: no executable-relative lookup is available, so the
+    // optional GPU accelerator is simply never found and the CPU path is used.
+    (void)filename;
+    return "";
+#endif
 }
 
 }  // namespace omnirender::core::temporal

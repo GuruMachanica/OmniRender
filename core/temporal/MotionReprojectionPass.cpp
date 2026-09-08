@@ -6,6 +6,9 @@
 #include "MotionReprojectionPass.h"
 #include <cstdio>
 #include <fstream>
+#if defined(_WIN32)
+#include <d3d11.h>  // ID3D11Device / ID3D11ComputeShader (optional GPU accelerator)
+#endif
 #include "ShaderPath.h"
 #include "../../graphics/abstraction/IGraphicsDevice.h"
 #include "../../graphics/abstraction/ICommandContext.h"
@@ -37,7 +40,8 @@ bool MotionReprojectionPass::Initialize(graphics::IGraphicsDevice& device,
     output_motion_ = GpuTexture(std::move(tex));
 
     // Constant buffer for reprojection matrix.
-    BufferDesc cb_desc{ sizeof(ReprojectionCB), BufferUsage::ConstantBuffer, "MotionReprojCB" };
+    // byte_width, stride_bytes (0 for constant buffers), usage, debug_name
+    BufferDesc cb_desc{ sizeof(ReprojectionCB), 0, BufferUsage::ConstantBuffer, "MotionReprojCB" };
     cb_buffer_ = device.CreateBuffer(cb_desc, nullptr);
 
     // Attempt to load the pre-compiled compute shader (optional GPU accelerator).
@@ -54,6 +58,7 @@ bool MotionReprojectionPass::Initialize(graphics::IGraphicsDevice& device,
         cso.seekg(0);
         std::vector<char> blob(sz);
         cso.read(blob.data(), static_cast<std::streamsize>(sz));
+#if defined(_WIN32)
         void* native_dev = device.GetNativeDevice();
         if (native_dev) {
             ID3D11Device* d3d = static_cast<ID3D11Device*>(native_dev);
@@ -61,6 +66,7 @@ bool MotionReprojectionPass::Initialize(graphics::IGraphicsDevice& device,
             HRESULT hr = d3d->CreateComputeShader(blob.data(), sz, nullptr, &cs);
             if (SUCCEEDED(hr)) gpu_shader_ = cs;
         }
+#endif
     }
     // Always allocate CPU scratch regardless of GPU path availability so the
     // static-camera zero-clear path and the first-frame fallback always work.
@@ -70,7 +76,9 @@ bool MotionReprojectionPass::Initialize(graphics::IGraphicsDevice& device,
 
 void MotionReprojectionPass::Shutdown() {
     if (gpu_shader_) {
+#if defined(_WIN32)
         static_cast<IUnknown*>(gpu_shader_)->Release();
+#endif
         gpu_shader_ = nullptr;
     }
     output_motion_.Reset();
