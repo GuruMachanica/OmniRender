@@ -36,6 +36,11 @@ ID3D11Texture2D*     g_shared_depth_tex    = nullptr;
 HANDLE               g_shared_color_handle = nullptr;
 HANDLE               g_shared_depth_handle = nullptr;
 
+// Resize-tracking state: recreate shared textures whenever these change.
+uint32_t             g_tex_width           = 0;
+uint32_t             g_tex_height          = 0;
+DXGI_FORMAT          g_tex_format          = DXGI_FORMAT_UNKNOWN;
+
 omnirender::RingControlBlock* g_ring = nullptr;
 
 // Forward declaration so HookedPresent can call CaptureFrameDXGI
@@ -77,21 +82,36 @@ void EnsureRingMapping() {
 }
 
 bool EnsureSharedTextures(IDXGISwapChain* swap) {
-    if (g_shared_color_tex) return true;
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (FAILED(swap->GetDesc(&desc))) return false;
+
+    const uint32_t W = desc.BufferDesc.Width;
+    const uint32_t H = desc.BufferDesc.Height;
+    const DXGI_FORMAT F = desc.BufferDesc.Format;
+
+    // Recreate shared textures on first call OR when the swapchain is resized/reformatted
+    // (Alt-Tab, fullscreen toggle, resolution change, device recreation).
+    if (g_shared_color_tex && W == g_tex_width && H == g_tex_height && F == g_tex_format) {
+        return true; // still valid
+    }
+
+    // Release stale resources.
+    if (g_shared_color_tex) { g_shared_color_tex->Release(); g_shared_color_tex = nullptr; }
+    if (g_shared_depth_tex) { g_shared_depth_tex->Release(); g_shared_depth_tex = nullptr; }
+    g_shared_color_handle = nullptr;
+    g_shared_depth_handle = nullptr;
+
     if (FAILED(swap->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void**>(&g_d3d11_device)))) {
         return false;
     }
     g_d3d11_device->GetImmediateContext(&g_d3d11_context);
 
-    DXGI_SWAP_CHAIN_DESC desc{};
-    if (FAILED(swap->GetDesc(&desc))) return false;
-
     D3D11_TEXTURE2D_DESC shared_desc{};
-    shared_desc.Width              = desc.BufferDesc.Width;
-    shared_desc.Height             = desc.BufferDesc.Height;
+    shared_desc.Width              = W;
+    shared_desc.Height             = H;
     shared_desc.MipLevels          = 1;
     shared_desc.ArraySize          = 1;
-    shared_desc.Format             = desc.BufferDesc.Format;
+    shared_desc.Format             = F;
     shared_desc.SampleDesc.Count   = 1;
     shared_desc.Usage              = D3D11_USAGE_DEFAULT;
     shared_desc.BindFlags          = D3D11_BIND_SHADER_RESOURCE;
@@ -107,6 +127,8 @@ bool EnsureSharedTextures(IDXGISwapChain* swap) {
         res->Release();
     }
 
+    // Depth texture: created but never populated by the DXGI path.
+    // Marked depth_valid=false in the IPC flags so the daemon doesn't treat it as valid.
     shared_desc.Format = DXGI_FORMAT_R32_FLOAT;
     if (SUCCEEDED(g_d3d11_device->CreateTexture2D(&shared_desc, nullptr, &g_shared_depth_tex))) {
         IDXGIResource* dres = nullptr;
@@ -130,8 +152,10 @@ bool EnsureSharedTextures(IDXGISwapChain* swap) {
         dxgi_dev->Release();
     }
 
-    OMNI_LOG_INFO("DXGI shared textures ready: %ux%u",
-                  desc.BufferDesc.Width, desc.BufferDesc.Height);
+    g_tex_width  = W;
+    g_tex_height = H;
+    g_tex_format = F;
+    OMNI_LOG_INFO("DXGI shared textures ready/resized: %ux%u fmt=%u", W, H, static_cast<uint32_t>(F));
     return true;
 }
 
@@ -185,7 +209,10 @@ void CaptureFrameDXGI(IDXGISwapChain* swap) {
     }
     slot->payload.motion_format       = 0x00000022;  // DXGI_FORMAT_R16G16_FLOAT
     slot->payload.struct_version      = omnirender::kIpcVersion_V040;
-    slot->payload.flags               = 0;
+    // Signal to daemon: camera matrices are zero (no extraction yet), depth texture
+    // is allocated but never populated. The daemon must not use them for reprojection.
+    slot->payload.flags = static_cast<uint32_t>(omnirender::IpcFlag::DepthRaw)  // depth unset = not acquired
+                        | static_cast<uint32_t>(omnirender::IpcFlag::CameraZero);// view-proj matrices are zero
 
     slot->fence.store(slot->payload.frame_index, std::memory_order_release);
     omnirender::SetState(*slot, omnirender::SlotState::Ready);
@@ -235,51 +262,3 @@ void InstallDXGIInterceptors() {
 }
 
 }  // namespace omnirender::hook
-
-// --- Proxy Exports for Drop-In dxgi.dll Hooking ---
-using PFN_CreateDXGIFactory  = HRESULT (WINAPI *)(REFIID, void**);
-using PFN_CreateDXGIFactory1 = HRESULT (WINAPI *)(REFIID, void**);
-using PFN_CreateDXGIFactory2 = HRESULT (WINAPI *)(UINT, REFIID, void**);
-
-static HMODULE GetRealDXGIModule() {
-    static HMODULE s_real_dxgi = nullptr;
-    if (!s_real_dxgi) {
-        wchar_t sys_path[MAX_PATH]{};
-        ::GetSystemDirectoryW(sys_path, MAX_PATH);
-        wcscat_s(sys_path, L"\\dxgi.dll");
-        s_real_dxgi = ::LoadLibraryW(sys_path);
-    }
-    return s_real_dxgi;
-}
-
-extern "C" HRESULT WINAPI Proxy_CreateDXGIFactory(REFIID riid, void** pp) {
-    HMODULE m = GetRealDXGIModule();
-    if (!m) return E_FAIL;
-    auto pfn = reinterpret_cast<PFN_CreateDXGIFactory>(::GetProcAddress(m, "CreateDXGIFactory"));
-    return pfn ? pfn(riid, pp) : E_FAIL;
-}
-
-extern "C" HRESULT WINAPI Proxy_CreateDXGIFactory1(REFIID riid, void** pp) {
-    HMODULE m = GetRealDXGIModule();
-    if (!m) return E_FAIL;
-    auto pfn = reinterpret_cast<PFN_CreateDXGIFactory1>(::GetProcAddress(m, "CreateDXGIFactory1"));
-    return pfn ? pfn(riid, pp) : E_FAIL;
-}
-
-extern "C" HRESULT WINAPI Proxy_CreateDXGIFactory2(UINT f, REFIID riid, void** pp) {
-    HMODULE m = GetRealDXGIModule();
-    if (!m) return E_FAIL;
-    auto pfn = reinterpret_cast<PFN_CreateDXGIFactory2>(::GetProcAddress(m, "CreateDXGIFactory2"));
-    return pfn ? pfn(f, riid, pp) : E_FAIL;
-}
-
-#if defined(_M_IX86)
-#pragma comment(linker, "/EXPORT:CreateDXGIFactory=_Proxy_CreateDXGIFactory@8")
-#pragma comment(linker, "/EXPORT:CreateDXGIFactory1=_Proxy_CreateDXGIFactory1@8")
-#pragma comment(linker, "/EXPORT:CreateDXGIFactory2=_Proxy_CreateDXGIFactory2@12")
-#else
-#pragma comment(linker, "/EXPORT:CreateDXGIFactory=Proxy_CreateDXGIFactory")
-#pragma comment(linker, "/EXPORT:CreateDXGIFactory1=Proxy_CreateDXGIFactory1")
-#pragma comment(linker, "/EXPORT:CreateDXGIFactory2=Proxy_CreateDXGIFactory2")
-#endif
-

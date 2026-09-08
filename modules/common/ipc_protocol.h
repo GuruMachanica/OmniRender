@@ -64,8 +64,9 @@ inline constexpr uint32_t kIpcVersion_V040 = 1;
 
 enum class IpcFlag : uint32_t {
     None        = 0,
-    ReversedZ   = 1u << 0,
-    DepthRaw    = 1u << 1,
+    ReversedZ   = 1u << 0,  // depth buffer uses reversed-Z convention
+    DepthRaw    = 1u << 1,  // depth was not acquired / is unpopulated
+    CameraZero  = 1u << 2,  // view_proj_current/previous are all-zero (not extracted)
 };
 
 // v0.3.0-alpha pipeline control bits travel in `flags` as well so the
