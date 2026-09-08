@@ -55,25 +55,27 @@ int main() {
     });
 
     std::thread consumer([&]() {
-        int last = 0;
+        // Claim the slot that carries the *next expected* frame. Picking any
+        // Ready slot could legally return frames out of order (the producer
+        // is free to fill slots ahead of the consumer), which used to trip a
+        // strict-ordering assert whenever the consumer picked a newer frame
+        // before an older one became Ready.
+        uint64_t next = 1;
         while (consumed < kTotalFrames) {
             FrameSlot* slot = nullptr;
             for (uint32_t k = 0; k < kRingCapacity; ++k) {
-                if (GetState(ring.slots[k]) == SlotState::Ready) {
+                if (GetState(ring.slots[k]) == SlotState::Ready &&
+                    ring.slots[k].payload.frame_index == next) {
                     SetState(ring.slots[k], SlotState::Processing);
                     slot = &ring.slots[k];
                     break;
                 }
             }
             if (!slot) { std::this_thread::yield(); continue; }
-            // The slot must have arrived in order; we allow a small
-            // out-of-order window because the consumer is allowed to
-            // pick any Ready slot, but the *frame_index* values must
-            // still be strictly increasing as we see them.
-            assert(slot->payload.frame_index > static_cast<uint64_t>(last));
-            last = static_cast<int>(slot->payload.frame_index);
+            assert(slot->payload.frame_index == next);
             SetState(*slot, SlotState::Free);
             ++consumed;
+            ++next;
         }
     });
 

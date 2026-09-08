@@ -256,25 +256,32 @@ inline BackendType SelectOptimalBackend(const FrameCapabilities& frame_caps,
     const BackendScoreWeights weights = GetWeightsForPreference(pref);
     BackendType best_type = BackendType::SpatialFallback;
     float best_score = -1.0f;
+    bool any_real_backend_compatible = false;
 
+    // SpatialFallback deliberately is NOT scored alongside the real backends:
+    // its near-perfect performance/latency numbers would outscore FSR under a
+    // Performance preference and downgrade users to a plain bilinear filter
+    // whenever any capable backend is present. It is used only as the safety
+    // net when no real backend can run on this frame.
     const struct { BackendType type; bool available; } candidates[] = {
         { BackendType::DLSS, dlss_available },
         { BackendType::XeSS, xess_available },
         { BackendType::OmniTemporal, temporal_available },
-        { BackendType::FSR, fsr_available },
-        { BackendType::SpatialFallback, true }
+        { BackendType::FSR, fsr_available }
     };
 
     for (const auto& c : candidates) {
         if (!c.available) continue;
         CompatibilityResult res = EvaluateBackend(c.type, frame_caps, true);
         if (!res.compatible) continue;
+        any_real_backend_compatible = true;
         float score = ComputeTotalScore(res.score, weights);
         if (score > best_score) {
             best_score = score;
             best_type = c.type;
         }
     }
+    if (!any_real_backend_compatible) return BackendType::SpatialFallback;
     return best_type;
 }
 

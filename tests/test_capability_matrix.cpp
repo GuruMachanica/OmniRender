@@ -21,6 +21,14 @@ namespace fs = std::filesystem;
 int main() {
     using namespace omnirender::daemon;
 
+    // Force the linker to emit an opengl32.dll import entry. Linking against
+    // opengl32.lib alone creates NO import unless a symbol is actually
+    // referenced, so without this the detector would see an empty table.
+    {
+        auto* wgl_fn = &::wglGetProcAddress;
+        if (wgl_fn == nullptr) return 1;  // never true; keeps the reference alive
+    }
+
     // ---- 1. Inspect this test binary itself ----
     wchar_t self_path[MAX_PATH]{};
     if (::GetModuleFileNameW(nullptr, self_path, MAX_PATH) == 0) {
