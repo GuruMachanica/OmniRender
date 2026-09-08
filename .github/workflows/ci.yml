@@ -24,7 +24,7 @@ jobs:
             script: -DOMNIRENDER_BUILD_HOOK=ON -DOMNIRENDER_BUILD_DAEMON=ON -DOMNIRENDER_BUILD_UI=ON -DOMNIRENDER_BUILD_TESTS=ON -DOMNIRENDER_USE_NGX=OFF -DCMAKE_BUILD_TYPE=Debug
             type: Debug
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure CMake
         shell: cmd
@@ -50,7 +50,7 @@ jobs:
           BUILD_TYPE: ${{ matrix.config.type }}
 
       - name: Upload Windows Binaries and Logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: omnirender-windows-${{ matrix.config.type }}-binaries
@@ -64,7 +64,7 @@ jobs:
     name: Linux / x64 / Core & Runtime Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Build Dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake g++
@@ -82,7 +82,7 @@ jobs:
     name: macOS / Apple Silicon / Core & Runtime Build
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure CMake (Platform-Independent Core, Backends & Runtime)
         run: cmake -B build -DOMNIRENDER_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
