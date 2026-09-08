@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup MSVC Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
@@ -131,7 +131,7 @@ jobs:
           Write-Host "SHA256: $hash"
 
       - name: Upload Build Artifacts (.exe bundle + checksum)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OmniRender-Windows-x64
           path: |
@@ -142,7 +142,7 @@ jobs:
 
       - name: Publish GitHub Release (on tags)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             OmniRender-Windows-x64.zip
