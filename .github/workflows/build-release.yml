@@ -1,0 +1,152 @@
+name: Build and Release Executables
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows x64 Release Build
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure CMake
+        shell: cmd
+        run: |
+          cmake -B build -A x64 ^
+            -DOMNIRENDER_BUILD_HOOK=ON ^
+            -DOMNIRENDER_BUILD_DAEMON=ON ^
+            -DOMNIRENDER_BUILD_UI=ON ^
+            -DOMNIRENDER_BUILD_TESTS=ON ^
+            -DOMNIRENDER_BUILD_TEST_HOST=ON ^
+            -DOMNIRENDER_BUILD_CSO=ON ^
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build All Executables and Shaders
+        shell: cmd
+        run: cmake --build build --config Release --parallel
+
+      - name: Build 32-bit Hook for Legacy DirectX 9 Games (Win32)
+        shell: cmd
+        run: |
+          cmake -B build32 -A Win32 -DOMNIRENDER_BUILD_HOOK=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build32 --config Release --target omnirender-hook
+
+      - name: Run Unit Tests
+        shell: cmd
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package Release Bundle
+        shell: pwsh
+        run: |
+          $dist = "dist\OmniRender-Windows-x64"
+          New-Item -ItemType Directory -Force -Path "$dist\shaders"
+
+          New-Item -ItemType Directory -Force -Path "$dist\hooks\x64" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$dist\hooks\x86" | Out-Null
+
+          # Copy main executables and DLLs
+          if (Test-Path "build\modules\ui\Release\OmniRenderControlPanel.exe") {
+            Copy-Item "build\modules\ui\Release\OmniRenderControlPanel.exe" "$dist\"
+          }
+          if (Test-Path "build\modules\daemon\Release\OmniRenderDaemon.exe") {
+            Copy-Item "build\modules\daemon\Release\OmniRenderDaemon.exe" "$dist\"
+          }
+          if (Test-Path "build\modules\daemon\Release\OmniRenderTestHost.exe") {
+            Copy-Item "build\modules\daemon\Release\OmniRenderTestHost.exe" "$dist\"
+          }
+          if (Test-Path "build\tests\gpu\Release\gpu_test_host.exe") {
+            Copy-Item "build\tests\gpu\Release\gpu_test_host.exe" "$dist\"
+          }
+          if (Test-Path "build\modules\hook\Release\omnirender-hook.dll") {
+            Copy-Item "build\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x64\"
+            Copy-Item "build\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x64\dxgi.dll"
+          }
+          if (Test-Path "build32\modules\hook\Release\omnirender-hook.dll") {
+            Copy-Item "build32\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x86\omnirender-hook32.dll"
+            Copy-Item "build32\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x86\d3d9.dll"
+          }
+
+          # Copy compiled HLSL shader bytecode
+          Get-ChildItem -Path "build\modules\daemon\shaders\*.cso", "build\modules\daemon\Release\*.cso" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination "$dist\shaders\" -Force
+
+          # Copy docs and licenses
+          Copy-Item "README.md", "LICENSE", "THIRD_PARTY_LICENSES.md" -Destination "$dist\" -ErrorAction SilentlyContinue
+
+          # Archive to zip
+          Compress-Archive -Path "$dist\*" -DestinationPath "OmniRender-Windows-x64.zip" -Force
+          Write-Host "Created OmniRender-Windows-x64.zip successfully."
+
+      - name: Validate Release Artifacts & Generate SHA256
+        shell: pwsh
+        run: |
+          $dist = "dist\OmniRender-Windows-x64"
+          $required = @(
+            "$dist\OmniRenderControlPanel.exe",
+            "$dist\OmniRenderDaemon.exe",
+            "$dist\hooks\x64\omnirender-hook.dll",
+            "$dist\hooks\x86\omnirender-hook32.dll",
+            "$dist\hooks\x86\d3d9.dll",
+            "$dist\hooks\x64\dxgi.dll",
+            "$dist\LICENSE",
+            "$dist\README.md",
+            "$dist\THIRD_PARTY_LICENSES.md"
+          )
+
+          Write-Host "Validating release package integrity..."
+          $failed = $false
+          foreach ($file in $required) {
+            if (-not (Test-Path $file)) {
+              Write-Error "Missing required artifact: $file"
+              $failed = $true
+            } else {
+              $size = (Get-Item $file).Length
+              Write-Host " [PASS] $file ($size bytes)"
+            }
+          }
+          if ($failed) {
+            throw "Artifact validation failed. Aborting release."
+          }
+
+          # Generate SHA256 Checksum
+          $hash = (Get-FileHash "OmniRender-Windows-x64.zip" -Algorithm SHA256).Hash
+          "$hash  OmniRender-Windows-x64.zip" | Out-File -FilePath "OmniRender-Windows-x64.zip.sha256" -Encoding ascii
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Build Artifacts (.exe bundle + checksum)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmniRender-Windows-x64
+          path: |
+            OmniRender-Windows-x64.zip
+            OmniRender-Windows-x64.zip.sha256
+            build/tests/gpu/Release/gpu_test_host.exe
+          retention-days: 14
+
+      - name: Publish GitHub Release (on tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            OmniRender-Windows-x64.zip
+            OmniRender-Windows-x64.zip.sha256
+          draft: false
+          prerelease: false
+          generate_release_notes: true

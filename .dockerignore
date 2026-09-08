@@ -1,0 +1,15 @@
+# filepath: .dockerignore
+# Anything not needed inside the build context.
+build/
+out/
+dist/
+.vs/
+.github/
+.git/
+.gitignore
+.gitattributes
+*.user
+*.suo
+*.log
+RELEASE_NOTES_v1.0.0.md
+docs/

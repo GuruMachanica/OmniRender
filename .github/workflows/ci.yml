@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: ${{ matrix.config.name }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: Windows / x64 / Release
+            script: -DOMNIRENDER_BUILD_HOOK=ON -DOMNIRENDER_BUILD_DAEMON=ON -DOMNIRENDER_BUILD_UI=ON -DOMNIRENDER_BUILD_TESTS=ON -DOMNIRENDER_USE_NGX=OFF -DCMAKE_BUILD_TYPE=Release
+            type: Release
+          - name: Windows / x64 / Debug
+            script: -DOMNIRENDER_BUILD_HOOK=ON -DOMNIRENDER_BUILD_DAEMON=ON -DOMNIRENDER_BUILD_UI=ON -DOMNIRENDER_BUILD_TESTS=ON -DOMNIRENDER_USE_NGX=OFF -DCMAKE_BUILD_TYPE=Debug
+            type: Debug
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        shell: cmd
+        run: cmake -B build -A x64 ${{ matrix.config.script }}
+
+      - name: Build
+        shell: cmd
+        run: cmake --build build --config ${{ matrix.config.type }} --parallel
+
+      - name: Test
+        shell: cmd
+        run: |
+          if exist build\tests\%BUILD_TYPE%\test_ring_buffer.exe (
+            ctest --test-dir build -C ${{ matrix.config.type }} --output-on-failure
+          ) else (
+            echo "Tests not run or configured; skipping ctest."
+          )
+          if exist omnirender_gpu_test.log (
+            echo --- GPU Test Debug Log ---
+            type omnirender_gpu_test.log
+          )
+        env:
+          BUILD_TYPE: ${{ matrix.config.type }}
+
+      - name: Upload Windows Binaries and Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: omnirender-windows-${{ matrix.config.type }}-binaries
+          path: |
+            build/**/*.exe
+            build/**/*.dll
+            omnirender_gpu_test.log
+          if-no-files-found: warn
+
+  build-linux-core:
+    name: Linux / x64 / Core & Runtime Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++
+
+      - name: Configure CMake (Platform-Independent Core, Backends & Runtime)
+        run: cmake -B build -DOMNIRENDER_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build OmniRenderCore, OmniRenderRuntime, and Tests
+        run: cmake --build build --target OmniRenderCore OmniRenderRuntime test_core_platform_neutral --parallel
+
+      - name: Run Platform-Neutral Unit Tests
+        run: ctest --test-dir build -R core_platform_neutral --output-on-failure
+
+  build-macos-core:
+    name: macOS / Apple Silicon / Core & Runtime Build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake (Platform-Independent Core, Backends & Runtime)
+        run: cmake -B build -DOMNIRENDER_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build OmniRenderCore, OmniRenderRuntime, and Tests
+        run: cmake --build build --target OmniRenderCore OmniRenderRuntime test_core_platform_neutral --parallel
+
+      - name: Run Platform-Neutral Unit Tests
+        run: ctest --test-dir build -R core_platform_neutral --output-on-failure

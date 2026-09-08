@@ -1,0 +1,55 @@
+# filepath: docs/profiles/skyrim.toml
+# Sample per-game profile for The Elder Scrolls V: Skyrim (D3D9).
+#
+# Copy this to %USERPROFILE%/.omnirender/profiles/<sha256-of-Skyrim.exe>.toml
+# and edit to your taste. The schema is documented in docs/configuration.md.
+
+[renderer]
+# Which upscaler to use. One of:
+#   auto        — let OmniRender pick based on GPU profile
+#   dlss        — NVIDIA RTX only
+#   fsr         — AMD or non-RTX NVIDIA
+#   cas         — pure sharpening (no temporal)
+#   off         — passthrough only, no upscaling
+upscaler = "auto"
+
+# Quality preset. One of:
+#   performance
+#   balanced
+#   quality
+#   ultra
+quality = "quality"
+
+# Sharpening pass after the upscaler. Range 0.0 .. 1.0.
+sharpen = 0.25
+
+[temporal]
+# Whether to run the temporal reconstruction pass.
+enabled = true
+
+# Number of history frames kept for the temporal resolve. Larger values
+# stabilize motion at the cost of memory and latency.
+history = 8
+
+# Motion source priority. One of:
+#   auto           — depth+VP reprojection, fall back to optical flow
+#   reproject      — depth+VP reprojection only
+#   optical_flow   — DIS optical flow only (slower, lower quality)
+motion = "auto"
+
+[hud]
+# Whether to exclude UI elements from the temporal history.
+# When true, the HUD is rendered after the upscaler so it stays crisp.
+exclude = true
+
+[pipeline]
+# Individual pipeline toggles. These override the daemon-wide defaults
+# from OMNIRENDER_ENABLE_*.
+enable_reconstruction = true
+enable_upscale        = true
+enable_tonemap        = true
+
+# Optional: override VRAM caps for this game.
+# max_work_width  = 1920
+# max_work_height = 1200
+# max_history     = 8

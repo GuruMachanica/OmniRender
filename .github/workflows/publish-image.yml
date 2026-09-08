@@ -1,0 +1,135 @@
+name: Publish container image
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-artifact:
+    name: Build Windows binary artifact
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: cmd
+        run: |
+          cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release ^
+            -DOMNIRENDER_BUILD_HOOK=ON ^
+            -DOMNIRENDER_BUILD_DAEMON=ON
+
+      - name: Build
+        shell: cmd
+        run: cmake --build build --config Release
+
+      # Package 7 / QA-01 smoke test. Spawns the daemon and the
+      # test host for one minute and verifies the IPC contract by
+      # grepping the test host's summary line. The runner has no
+      # GPU so D3D11 falls back to WARP; the test host is built
+      # to handle that transparently.
+      - name: Soak smoke test (60 s)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = 'build/modules/daemon'
+          Write-Host "soak: launching $bin\OmniRenderSoak.exe --duration-seconds 60"
+          $p = Start-Process -FilePath "$bin\OmniRenderSoak.exe" `
+                              -ArgumentList @('--duration-seconds','60','--bin-dir',$bin) `
+                              -NoNewWindow -PassThru -Wait `
+                              -RedirectStandardOutput 'soak.stdout.log' `
+                              -RedirectStandardError  'soak.stderr.log'
+          Write-Host "soak: exit code $($p.ExitCode)"
+          if (Test-Path 'soak.stdout.log') {
+            Get-Content 'soak.stdout.log' | ForEach-Object { Write-Host "soak stdout: $_" }
+          }
+          if (Test-Path 'soak.stderr.log') {
+            Get-Content 'soak.stderr.log' | ForEach-Object { Write-Host "soak stderr: $_" }
+          }
+          if ($p.ExitCode -ne 0) {
+            Write-Error "soak: OmniRenderSoak exited with non-zero status"
+            exit 1
+          }
+          if (-not (Select-String -Path 'soak.stdout.log' -Pattern 'OMNIRENDER_TEST_HOST_SUMMARY' -Quiet)) {
+            Write-Error "soak: did not see OMNIRENDER_TEST_HOST_SUMMARY line"
+            exit 1
+          }
+          Write-Host "soak: PASS"
+
+      - name: Stage release artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = 'build/staging'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          # Ninja + single-config Release does not put outputs in a
+          # `Release/` subdirectory (that is a MSBuild multi-config
+          # layout). The flat build/modules/<target>/ path is the
+          # canonical CMake/Ninja output.
+          Copy-Item build/modules/daemon/OmniRenderDaemon.exe $stage
+          Copy-Item build/modules/hook/omnirender-hook.dll $stage
+          if (Test-Path build/modules/daemon/OmniRenderTestHost.exe) {
+            Copy-Item build/modules/daemon/OmniRenderTestHost.exe $stage
+          }
+          if (Test-Path build/tests/OmniRenderSoak.exe) {
+            Copy-Item build/tests/OmniRenderSoak.exe $stage
+          }
+          if (Test-Path modules/shaders) {
+            Copy-Item -Recurse modules/shaders $stage/shaders
+          }
+          if (Test-Path profiles) {
+            Copy-Item -Recurse profiles $stage/profiles
+          }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath omnirender-windows-x64.zip
+          Get-FileHash omnirender-windows-x64.zip -Algorithm SHA256 |
+            Tee-Object -FilePath omnirender-windows-x64.zip.sha256 |
+            Select-Object Hash, Path
+
+      - name: Upload to workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnirender-windows-x64
+          path: |
+            omnirender-windows-x64.zip
+            omnirender-windows-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            omnirender-windows-x64.zip
+            omnirender-windows-x64.zip.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+  # Container image publishing is intentionally disabled for
+  # v0.7.0-alpha. The mcr.microsoft.com/windows base image
+  # manifest does not include numeric tags (10.0.20348,
+  # 10.0.26100) and the SDK image does not ship MSVC, so a full
+  # multi-stage container build cannot succeed on the GitHub
+  # Actions windows-2022 runner today. The GHCR image tag is
+  # reserved for a future release once Microsoft exposes a
+  # buildable Windows base image or we move to a different
+  # runtime target.
+  publish-image:
+    name: Publish Windows image to GHCR (disabled)
+    runs-on: windows-2022
+    if: false
+    needs: build-artifact
+    steps:
+      - name: Build & push (windows/amd64)
+        run: echo "Image publishing disabled in v0.7.0-alpha"

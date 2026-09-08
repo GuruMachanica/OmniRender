@@ -1,0 +1,4 @@
+// filepath: assets/omnirender.rc
+// Application icon resource for OmniRender executables
+
+1 ICON "icon.ico"

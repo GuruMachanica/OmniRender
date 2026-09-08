@@ -1,0 +1,83 @@
+# Build output
+build/
+out/
+dist/
+bin_*/
+dist_download/
+scratch/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.cachefile
+*.VC.db
+*.VC.opendb
+ipch/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+Win32/
+ARM/
+ARM64/
+.vs/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+
+# Generated artifacts
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.exe
+*.dll
+*.pyd
+*.cso
+*.dxil
+*.engine
+
+# Vendor SDK outputs (never commit)
+*.trt
+nvngx_*.dll
+sl.interposer.dll
+sl.d3d11.dll
+sl.d3d12.dll
+
+# IDE
+.idea/
+.vscode/settings.json
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# Logs
+*.log
+
+# Profiling / coverage
+*.gcda
+*.gcno
+*.profdata
+coverage/
+
+# Secrets
+.env
+.env.local
+*.key
+*.pem
