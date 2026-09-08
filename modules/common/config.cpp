@@ -113,6 +113,16 @@ bool ConfigStore::LoadFromFile(const std::filesystem::path& path) {
 }
 
 bool ConfigStore::SaveToFile(const std::filesystem::path& path) const {
+    // Ensure parent directories exist before attempting to write.
+    // On first run .omnirender/ doesn't exist, and ofstream open silently fails.
+    std::error_code ec;
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec) {
+            OMNI_LOG_WARN("config: could not create directory %s: %s",
+                          path.parent_path().string().c_str(), ec.message().c_str());
+        }
+    }
     std::ofstream out(path, std::ios::trunc);
     if (!out.is_open()) return false;
 

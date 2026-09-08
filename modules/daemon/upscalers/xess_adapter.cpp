@@ -138,19 +138,25 @@ bool XessAdapter::Execute(FrameContext& ctx) {
         return false;
     }
 
-    if (runtime_caps_.supports_sr && xess_context_ && device_) {
-        ID3D11Resource* color_res = ctx.color.AsResource<ID3D11Resource>();
-        ID3D11Resource* depth_res = ctx.depth.AsResource<ID3D11Resource>();
+    if (runtime_caps_.supports_sr && xess_context_ && device_ && pfn_xessExecute) {
+        ID3D11Resource* color_res  = ctx.color.AsResource<ID3D11Resource>();
+        ID3D11Resource* depth_res  = ctx.depth.AsResource<ID3D11Resource>();
         ID3D11Resource* motion_res = ctx.motion.AsResource<ID3D11Resource>();
 
         if (color_res && depth_res && motion_res) {
-            ctx.color.source = DataSource::Reconstructed;
-            return true;
+            // TODO(xess): populate xess_d3d11_execute_params with color/depth/motion/output
+            // views and call pfn_xessExecute(xess_context_, d3d11_ctx, &params).
+            // Until then we do NOT set DataSource::Reconstructed so the pipeline
+            // falls back to the spatial path rather than returning garbage.
+            OMNI_LOG_WARN("XeSS Execute: real xessD3D11Execute call not yet implemented; "
+                          "falling back to spatial path");
+            return false;
         }
     }
 
-    ctx.color.source = DataSource::Reconstructed;
-    return true;
+    // SDK not loaded or resources unavailable — do not claim reconstruction success.
+    OMNI_LOG_WARN("XeSS Execute: SDK unavailable or resources missing; falling back");
+    return false;
 }
 
 void XessAdapter::Shutdown() {
