@@ -38,7 +38,7 @@ jobs:
         shell: cmd
         run: |
           if exist build\tests\%BUILD_TYPE%\test_ring_buffer.exe (
-            ctest --test-dir build -C ${{ matrix.config.type }} --output-on-failure
+            ctest --test-dir build -C ${{ matrix.config.type }} --output-on-failure --timeout 120
           ) else (
             echo "Tests not run or configured; skipping ctest."
           )
