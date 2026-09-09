@@ -182,7 +182,7 @@ int RunPresentationLoop() {
             waiter.WaitForFence(*slot, slot->payload.frame_index, 100);
 
 #ifndef OMNIRENDER_LEGACY_PIPELINE
-            if (RuntimePipelineReady()) {
+            if (RuntimeDeviceReady()) {
                 if (NewPipelineFrame(*slot) < 0) RunPassthroughFrame(*slot);
             } else {
                 RunPassthroughFrame(*slot);

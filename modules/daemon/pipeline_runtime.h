@@ -15,6 +15,9 @@ void ShutdownRuntimePipeline();
 // Returns 0 on success, <0 on failure.
 int  NewPipelineFrame(omnirender::FrameSlot& slot);
 
+// True once device is wrapped — NewPipelineFrame() handles first-frame lazy-init.
+bool RuntimeDeviceReady();
+
 // True when the new pipeline is initialized and ready to accept frames.
 bool RuntimePipelineReady();
 

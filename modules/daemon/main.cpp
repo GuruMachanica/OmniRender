@@ -163,12 +163,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
         }
     }
 
+    // Initialize upscaler SDKs, profiler, and neural tonemap.
+    // These are shared by both the legacy and runtime pipeline paths.
+    // In the new runtime path, the frame-dispatch pipeline is initialized
+    // separately below via InitializeRuntimePipeline().
     const int pipe_rc = omnirender::daemon::InitializePipeline();
     if (pipe_rc < 0) {
         OMNI_LOG_WARN("Pipeline init failed (%d); running passthrough only", pipe_rc);
     }
 
 #ifndef OMNIRENDER_LEGACY_PIPELINE
+    // New runtime path: runtime::Pipeline + CaptureAdapter.
+    // Pipeline::Initialize() is deferred to the first frame with a real resolution.
     if (!omnirender::daemon::InitializeRuntimePipeline()) {
         OMNI_LOG_WARN("Runtime pipeline init failed; new temporal path unavailable");
     }

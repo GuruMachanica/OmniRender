@@ -1,18 +1,24 @@
 // filepath: modules/daemon/pipeline_runtime.cpp
 // Routes daemon frames through runtime::Pipeline (the new temporal path).
 //
-// This is the NEW execution path. The old path (pipeline.cpp/processing.cpp)
-// remains compiled behind OMNIRENDER_LEGACY_PIPELINE for rollback safety.
+// Old path (pipeline.cpp/processing.cpp) remains behind OMNIRENDER_LEGACY_PIPELINE.
 //
-// Key design: Pipeline::Initialize() is deferred to the first NewPipelineFrame()
-// call so the real swapchain resolution (from the IPC payload) is used, not a
-// hardcoded placeholder. On resize, OnDeviceLost()+OnDeviceRestored() rebuilds
-// history textures and temporal buffers at the new dimensions.
+// Design invariants:
+// - Pipeline::Initialize() is deferred to the first NewPipelineFrame() call.
+// - Both input AND output resolutions are tracked independently; a change in
+//   either triggers OnDeviceLost() + fresh Initialize() + AttachBackend().
+// - A backend is only attached when IsRuntimeAvailable() AND it can actually
+//   execute (DLL loaded + GPU supported). An unexecutable backend is never
+//   registered so it cannot turn the upscale pass Required and break frames.
+// - Failed initializations use an exponential backoff so NGX/device-creation
+//   is not hammered every frame on persistent failure.
 
 #ifndef OMNIRENDER_LEGACY_PIPELINE
 
 #include "pipeline_runtime.h"
 
+#include <chrono>
+#include <cmath>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -39,65 +45,94 @@ std::unique_ptr<graphics::d3d11::D3D11CommandContext>  g_rt_context;
 std::unique_ptr<runtime::Pipeline>                     g_rt_pipeline;
 std::unique_ptr<CaptureAdapter>                        g_rt_adapter;
 
-// Last resolution at which Pipeline::Initialize() ran (0x0 = not yet).
-uint32_t g_pipeline_width  = 0;
-uint32_t g_pipeline_height = 0;
+// Full resolution domain tracked independently (issue #1, #2).
+core::Resolution g_input_res  {};
+core::Resolution g_output_res {};
+core::TextureFormat g_color_fmt = core::TextureFormat::Unknown;
 
-bool g_device_ready = false;  // device/context/adapter created
-bool g_pipe_ready   = false;  // Pipeline::Initialize() succeeded at least once
+bool g_device_ready = false;
+bool g_pipe_ready   = false;
 
-// Attach the best available reconstruction backend (idempotent after resize).
-void AttachBackend() {
+// Retry backoff state (issue #13).
+using Clock     = std::chrono::steady_clock;
+using TimePoint = Clock::time_point;
+static constexpr int kMaxFailures    = 8;
+static constexpr int kBaseRetryMs    = 500;
+int       g_fail_count   = 0;
+TimePoint g_next_retry   = Clock::now();
+
+bool IsRetryAllowed() {
+    return g_fail_count < kMaxFailures && Clock::now() >= g_next_retry;
+}
+
+void RecordInitFailure() {
+    ++g_fail_count;
+    int delay_ms = kBaseRetryMs * (1 << std::min(g_fail_count, 7));
+    g_next_retry = Clock::now() + std::chrono::milliseconds(delay_ms);
+    OMNI_LOG_WARN("runtime pipeline: init failed (attempt %d); retry in %d ms",
+                  g_fail_count, delay_ms);
+}
+
+// Attach the best available backend that can actually execute (issue #3).
+// Returns true if a functional backend was attached.
+bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
     if (omnirender::config::g_enable_dlss) {
         auto& dlss = upscaler::GetGlobalDlssAdapter();
+        // IsRuntimeAvailable checks DLL + GPU support + feature creation.
         if (dlss.IsRuntimeAvailable()) {
             g_rt_pipeline->SetReconstructionBackend(
                 std::shared_ptr<backends::IReconstructionBackend>(
                     &dlss, [](backends::IReconstructionBackend*) {}));
-            OMNI_LOG_INFO("runtime pipeline: DLSS backend attached");
-            return;
+            OMNI_LOG_INFO("runtime pipeline: DLSS attached (%ux%u -> %ux%u)",
+                          in.width, in.height, out.width, out.height);
+            return true;
         }
+        OMNI_LOG_INFO("runtime pipeline: DLSS requested but not available");
     }
     if (omnirender::config::g_enable_xess) {
         auto& xess = upscaler::GetGlobalXessAdapter();
+        // XeSS Execute() returns false (not yet implemented), so treat it as
+        // unavailable in the runtime path to avoid poisoning the Required pass.
         if (xess.IsRuntimeAvailable()) {
-            g_rt_pipeline->SetReconstructionBackend(
-                std::shared_ptr<backends::IReconstructionBackend>(
-                    &xess, [](backends::IReconstructionBackend*) {}));
-            OMNI_LOG_INFO("runtime pipeline: XeSS backend attached");
-            return;
+            OMNI_LOG_INFO("runtime pipeline: XeSS SDK present but execute unimplemented; "
+                          "skipping attach (spatial fallback will be used)");
         }
     }
     OMNI_LOG_INFO("runtime pipeline: no reconstruction backend (spatial-only)");
+    return false;
 }
 
-// (Re-)initialize Pipeline at the given resolution.
-// On resize, tears down old state via OnDeviceLost() first so history
-// textures and temporal buffers are rebuilt at the correct dimensions.
-bool InitPipelineAtResolution(uint32_t w, uint32_t h,
+// (Re-)initialize Pipeline for the given input+output resolution pair.
+bool InitPipelineAtResolution(const core::Resolution& in,
+                              const core::Resolution& out,
                               core::TextureFormat color_fmt) {
     if (g_pipe_ready) {
-        OMNI_LOG_INFO("runtime pipeline: resize %ux%u -> %ux%u; flushing history",
-                      g_pipeline_width, g_pipeline_height, w, h);
+        OMNI_LOG_INFO("runtime pipeline: resize [%ux%u->%ux%u] -> [%ux%u->%ux%u]; "
+                      "flushing history",
+                      g_input_res.width, g_input_res.height,
+                      g_output_res.width, g_output_res.height,
+                      in.width, in.height, out.width, out.height);
         g_rt_pipeline->OnDeviceLost();
+        g_pipe_ready = false;
     }
 
-    const core::Resolution res{ w, h };
-    if (!g_rt_pipeline->Initialize(*g_rt_device, res, res,
-                                   color_fmt,
-                                   core::TextureFormat::R32_FLOAT)) {
-        OMNI_LOG_ERROR("runtime pipeline: Initialize failed at %ux%u", w, h);
-        g_pipe_ready       = false;
-        g_pipeline_width   = 0;
-        g_pipeline_height  = 0;
+    if (!g_rt_pipeline->Initialize(*g_rt_device, in, out,
+                                   color_fmt, core::TextureFormat::R32_FLOAT)) {
+        OMNI_LOG_ERROR("runtime pipeline: Initialize failed [%ux%u->%ux%u]",
+                       in.width, in.height, out.width, out.height);
+        g_input_res = g_output_res = {};
+        RecordInitFailure();
         return false;
     }
 
-    AttachBackend();
-    g_pipe_ready      = true;
-    g_pipeline_width  = w;
-    g_pipeline_height = h;
-    OMNI_LOG_INFO("runtime pipeline: ready at %ux%u", w, h);
+    AttachBackend(in, out);
+    g_pipe_ready  = true;
+    g_input_res   = in;
+    g_output_res  = out;
+    g_color_fmt   = color_fmt;
+    g_fail_count  = 0;  // success resets backoff
+    OMNI_LOG_INFO("runtime pipeline: ready [%ux%u -> %ux%u]",
+                  in.width, in.height, out.width, out.height);
     return true;
 }
 
@@ -118,16 +153,13 @@ bool InitializeRuntimePipeline() {
     }
 
     using Microsoft::WRL::ComPtr;
-    ComPtr<ID3D11Device>        d(dev);
-    ComPtr<ID3D11DeviceContext> c(ctx);
-
-    g_rt_device   = std::make_unique<graphics::d3d11::D3D11GraphicsDevice>(d, c);
-    g_rt_context  = std::make_unique<graphics::d3d11::D3D11CommandContext>(c);
+    g_rt_device   = std::make_unique<graphics::d3d11::D3D11GraphicsDevice>(
+                        ComPtr<ID3D11Device>(dev), ComPtr<ID3D11DeviceContext>(ctx));
+    g_rt_context  = std::make_unique<graphics::d3d11::D3D11CommandContext>(
+                        ComPtr<ID3D11DeviceContext>(ctx));
     g_rt_pipeline = std::make_unique<runtime::Pipeline>();
     g_rt_adapter  = std::make_unique<CaptureAdapter>(*g_rt_device);
 
-    // Pipeline::Initialize() is deferred to the first NewPipelineFrame() so
-    // the real IPC surface dimensions are used, not a hardcoded placeholder.
     g_device_ready = true;
     OMNI_LOG_INFO("runtime pipeline: device ready (init deferred to first frame)");
     return true;
@@ -138,34 +170,47 @@ void ShutdownRuntimePipeline() {
     g_rt_adapter.reset();
     g_rt_context.reset();
     g_rt_device.reset();
-    g_device_ready    = false;
-    g_pipe_ready      = false;
-    g_pipeline_width  = 0;
-    g_pipeline_height = 0;
+    g_device_ready = g_pipe_ready = false;
+    g_input_res = g_output_res = {};
+    g_color_fmt  = core::TextureFormat::Unknown;
+    g_fail_count = 0;
 }
 
 int NewPipelineFrame(FrameSlot& slot) {
     if (!g_device_ready || !g_rt_pipeline || !g_rt_adapter || !g_rt_context)
         return -1;
 
-    const uint32_t W = slot.payload.surface_width;
-    const uint32_t H = slot.payload.surface_height;
-    if (W == 0 || H == 0) return -1;
+    const uint32_t iw = slot.payload.surface_width;
+    const uint32_t ih = slot.payload.surface_height;
+    if (iw == 0 || ih == 0) return -1;
 
-    // Lazy init on first frame, or re-init on resolution change.
-    if (!g_pipe_ready || W != g_pipeline_width || H != g_pipeline_height) {
-        const core::TextureFormat fmt =
-            CaptureAdapter::ToDxgiFormat(slot.payload.color_format);
-        const core::TextureFormat color_fmt =
-            (fmt == core::TextureFormat::Unknown)
-                ? core::TextureFormat::RGBA8_UNORM : fmt;
-        if (!InitPipelineAtResolution(W, H, color_fmt))
-            return -1;
+    // Read real output resolution from IPC payload (issue #1).
+    const uint32_t ow = slot.payload.target_width  ? slot.payload.target_width  : iw;
+    const uint32_t oh = slot.payload.target_height ? slot.payload.target_height : ih;
+
+    const core::Resolution in{ iw, ih };
+    const core::Resolution out{ ow, oh };
+
+    const core::TextureFormat fmt =
+        CaptureAdapter::ToDxgiFormat(slot.payload.color_format);
+    const core::TextureFormat color_fmt =
+        (fmt == core::TextureFormat::Unknown)
+            ? core::TextureFormat::RGBA8_UNORM : fmt;
+
+    // Re-init if input OR output resolution or format changed (issues #1, #2).
+    const bool needs_init = !g_pipe_ready
+        || in  != g_input_res
+        || out != g_output_res
+        || color_fmt != g_color_fmt;
+
+    if (needs_init) {
+        if (!IsRetryAllowed()) return -1;  // backoff active (issue #13)
+        if (!InitPipelineAtResolution(in, out, color_fmt)) return -1;
     }
 
     core::FrameContext fc = g_rt_adapter->Adapt(slot.payload);
     if (!fc.IsValid()) {
-        OMNI_LOG_WARN("NewPipelineFrame: Adapt produced invalid context (frame %llu)",
+        OMNI_LOG_WARN("NewPipelineFrame: invalid context (frame %llu)",
                       slot.payload.frame_index);
         return -1;
     }
@@ -174,10 +219,15 @@ int NewPipelineFrame(FrameSlot& slot) {
     return ok ? 0 : -1;
 }
 
-// RuntimePipelineReady() returns true once the device is created so that
-// presentation_win.cpp starts routing frames here.  The pipeline itself is
-// initialized lazily on the first frame with a valid resolution.
+// Issue #12: returns true only when both device AND pipeline are ready.
+// Presentation loop uses this; first-frame lazy-init is separate.
 bool RuntimePipelineReady() {
+    return g_device_ready && g_pipe_ready;
+}
+
+// Separate query for the device-only ready state so presentation_win can
+// route frames to NewPipelineFrame() even before the first lazy-init fires.
+bool RuntimeDeviceReady() {
     return g_device_ready && g_rt_pipeline != nullptr;
 }
 
