@@ -6,6 +6,8 @@ add_library(omnirender-hook SHARED
     d3d9_hud.cpp
     d3d9_shared_surfaces.cpp
     dxgi_interceptor.cpp
+    dxgi_capture_frame.cpp
+    dxgi_depth_capture.cpp
     dxgi_proxy.cpp
     depth_locator.cpp
     depth_format.cpp

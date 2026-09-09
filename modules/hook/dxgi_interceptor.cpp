@@ -23,14 +23,14 @@
 
 namespace omnirender::hook {
 
+// Defined in dxgi_capture_frame.cpp (omnirender::hook scope).
+void CaptureFrameDXGI(IDXGISwapChain* swap);
+
 namespace {
 
 using PFN_DXGISwapChain_Present = HRESULT (STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
 struct OriginalDXGI { PFN_DXGISwapChain_Present Present = nullptr; };
 OriginalDXGI g_original;
-
-// CaptureFrameDXGI defined in dxgi_capture_frame.cpp.
-void CaptureFrameDXGI(IDXGISwapChain* swap);
 
 HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* self, UINT sync, UINT flags) {
     if (self) CaptureFrameDXGI(self);
