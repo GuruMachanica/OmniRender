@@ -24,9 +24,9 @@ using core::TextureFormat;
 // ---------------------------------------------------------------------------
 TextureFormat CaptureAdapter::ToDxgiFormat(uint32_t fmt_uint) noexcept {
     switch (static_cast<DXGI_FORMAT>(fmt_uint)) {
-        case DXGI_FORMAT_R8G8B8A8_UNORM:      return TextureFormat::RGBA8_UNORM;
+        case DXGI_FORMAT_R8G8B8A8_UNORM:      return TextureFormat::R8G8B8A8_UNORM;
         case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return TextureFormat::R8G8B8A8_UNORM_SRGB;
-        case DXGI_FORMAT_B8G8R8A8_UNORM:      return TextureFormat::BGRA8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:      return TextureFormat::B8G8R8A8_UNORM;
         case DXGI_FORMAT_R10G10B10A2_UNORM:   return TextureFormat::R10G10B10A2_UNORM;
         case DXGI_FORMAT_R16G16B16A16_FLOAT:  return TextureFormat::R16G16B16A16_FLOAT;
         case DXGI_FORMAT_R32_FLOAT:           return TextureFormat::R32_FLOAT;

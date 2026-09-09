@@ -29,10 +29,10 @@
 #include "capture_adapter.h"
 #include "interop_d3d11.h"
 #include "presentation_win.h"
-#include "upscalers/dlss_adapter.h"
 #include "upscalers/xess_adapter.h"
 
 #include "../../runtime/Pipeline.h"
+#include "../../backends/reconstruction/dlss/DlssReconstructionBackend.h"
 #include "../../graphics/d3d11/D3D11GraphicsDevice.h"
 #include "../../graphics/d3d11/D3D11CommandContext.h"
 
@@ -76,21 +76,30 @@ void RecordInitFailure() {
                   g_fail_count, delay_ms);
 }
 
+// Core-side DLSS backend (implements omnirender::backends::IReconstructionBackend,
+// the interface runtime::Pipeline actually consumes). Created once and reused
+// across resizes; Pipeline::SetReconstructionBackend drives its Initialize().
+std::shared_ptr<backends::IReconstructionBackend> g_core_dlss;
+
 // Attach the best available backend that can actually execute (issue #3).
 // Returns true if a functional backend was attached.
 bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
     if (omnirender::config::g_enable_dlss) {
-        auto& dlss = upscaler::GetGlobalDlssAdapter();
-        // IsRuntimeAvailable checks DLL + GPU support + feature creation.
-        if (dlss.IsRuntimeAvailable()) {
-            g_rt_pipeline->SetReconstructionBackend(
-                std::shared_ptr<backends::IReconstructionBackend>(
-                    &dlss, [](backends::IReconstructionBackend*) {}));
+        if (!g_core_dlss) {
+            g_core_dlss = std::make_shared<backends::dlss::DlssReconstructionBackend>();
+        }
+        // Pipeline::SetReconstructionBackend calls Initialize(*device, in, out)
+        // (pipeline is already initialized here) and drops the backend on failure.
+        g_rt_pipeline->SetReconstructionBackend(g_core_dlss);
+        auto* dlss = static_cast<backends::dlss::DlssReconstructionBackend*>(g_core_dlss.get());
+        if (dlss->IsRuntimeAvailable()) {
             OMNI_LOG_INFO("runtime pipeline: DLSS attached (%ux%u -> %ux%u)",
                           in.width, in.height, out.width, out.height);
             return true;
         }
-        OMNI_LOG_INFO("runtime pipeline: DLSS requested but not available");
+        OMNI_LOG_INFO("runtime pipeline: DLSS init failed (state=%s)", dlss->GetStateString());
+        g_core_dlss.reset();
+        return false;
     }
     if (omnirender::config::g_enable_xess) {
         auto& xess = upscaler::GetGlobalXessAdapter();
@@ -176,6 +185,7 @@ void ShutdownRuntimePipeline() {
     g_rt_adapter.reset();
     g_rt_context.reset();
     g_rt_device.reset();
+    g_core_dlss.reset();
     g_device_ready = g_pipe_ready = false;
     g_input_res = g_output_res = {};
     g_color_fmt  = core::TextureFormat::Unknown;
@@ -201,7 +211,7 @@ int NewPipelineFrame(FrameSlot& slot) {
         CaptureAdapter::ToDxgiFormat(slot.payload.color_format);
     const core::TextureFormat color_fmt =
         (fmt == core::TextureFormat::Unknown)
-            ? core::TextureFormat::RGBA8_UNORM : fmt;
+            ? core::TextureFormat::R8G8B8A8_UNORM : fmt;
 
     // Re-init if input OR output resolution or format changed (issues #1, #2).
     const bool needs_init = !g_pipe_ready

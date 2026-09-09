@@ -19,7 +19,7 @@
 #include "pipeline_runtime.h"
 #include "presentation_win.h"
 #include "processing.h"
-#include "interop_d3d11.h"
+#include "../../graphics/abstraction/IGraphicsTexture.h"
 
 namespace omnirender::daemon {
 

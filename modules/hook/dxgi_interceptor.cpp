@@ -49,17 +49,9 @@ void OnSwapChainCreated(IDXGISwapChain* swap) {
 
 namespace dxgi_state {
 
-// Define globals (declared extern in dxgi_shared_state.h for other TUs).
-omnirender::RingControlBlock* g_ring              = nullptr;
-ID3D11Device*                g_d3d11_device       = nullptr;
-ID3D11DeviceContext*         g_d3d11_context      = nullptr;
-ID3D11Texture2D*             g_shared_color_tex   = nullptr;
-ID3D11Texture2D*             g_shared_depth_tex   = nullptr;
-HANDLE                       g_shared_color_handle = nullptr;
-HANDLE                       g_shared_depth_handle = nullptr;
-uint32_t                     g_tex_width           = 0;
-uint32_t                     g_tex_height          = 0;
-DXGI_FORMAT                  g_tex_format          = DXGI_FORMAT_UNKNOWN;
+// Globals are DEFINED here via dxgi_shared_state.h (DXGI_DEFINE_GLOBALS makes
+// DXGI_EXTERN empty); other TUs see plain extern declarations.
+// Do not re-define them in this file — that caused C2086 redefinitions.
 
 void EnsureRingMapping() noexcept {
     if (g_ring) return;

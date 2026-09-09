@@ -10,6 +10,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ### Fixed
+- **Daemon runtime path did not compile (Windows).** The five
+  pipeline-unification commits left the new daemon sources unbuildable:
+  - `dxgi_interceptor.cpp` re-defined globals that its own header already
+    defines via `DXGI_DEFINE_GLOBALS` (C2086 x10).
+  - `capture_adapter.cpp` / `pipeline_runtime.cpp` referenced
+    `TextureFormat::RGBA8_UNORM` / `BGRA8_UNORM`, which do not exist; the
+    canonical names are `R8G8B8A8_UNORM` / `B8G8R8A8_UNORM`.
+  - `presentation_win.cpp` dereferenced `graphics::IGraphicsTexture*` without
+    including its header (C2027).
+  - `AttachBackend()` wrapped the daemon-legacy `DlssAdapter` (a *different*
+    `IReconstructionBackend` type) in a non-owning `shared_ptr` that could not
+    convert. It now creates the core-side
+    `backends::dlss::DlssReconstructionBackend` — the real implementation of
+    the interface `runtime::Pipeline` consumes — and reports its NGX state on
+    init failure.
 - **Ring-buffer producer/consumer race.** Slots now transition
   `Ready → Processing → Free` instead of reusing a legacy `Consumed`
   state. `ConsumeFrame()` moves a slot to `Processing` *before*
