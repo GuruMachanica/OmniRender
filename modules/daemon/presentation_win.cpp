@@ -196,7 +196,18 @@ int RunPresentationLoop() {
 
 #ifndef OMNIRENDER_LEGACY_PIPELINE
             if (RuntimeDeviceReady()) {
-                if (NewPipelineFrame(*slot) < 0) RunPassthroughFrame(*slot);
+                const int pipe_rc = NewPipelineFrame(*slot);
+                // #15: present the reconstructed output if the pipeline produced one.
+                graphics::IGraphicsTexture* out_tex = GetLastOutputTexture();
+                if (pipe_rc == 0 && out_tex && out_tex->GetNativeSrv()) {
+                    // Blit reconstructed output to overlay swapchain.
+                    ID3D11ShaderResourceView* srv =
+                        static_cast<ID3D11ShaderResourceView*>(out_tex->GetNativeSrv());
+                    BlitFrame(srv, static_cast<UINT>(last_width),
+                                   static_cast<UINT>(last_height));
+                } else {
+                    RunPassthroughFrame(*slot);
+                }
             } else {
                 RunPassthroughFrame(*slot);
             }

@@ -45,13 +45,16 @@ std::unique_ptr<graphics::d3d11::D3D11CommandContext>  g_rt_context;
 std::unique_ptr<runtime::Pipeline>                     g_rt_pipeline;
 std::unique_ptr<CaptureAdapter>                        g_rt_adapter;
 
-// Full resolution domain tracked independently (issue #1, #2).
-core::Resolution g_input_res  {};
-core::Resolution g_output_res {};
+// Full resolution domain tracked independently.
+core::Resolution    g_input_res  {};
+core::Resolution    g_output_res {};
 core::TextureFormat g_color_fmt = core::TextureFormat::Unknown;
 
 bool g_device_ready = false;
 bool g_pipe_ready   = false;
+
+// #15: last reconstructed output texture (valid until next frame).
+graphics::IGraphicsTexture* g_last_output_tex = nullptr;
 
 // Retry backoff state (issue #13).
 using Clock     = std::chrono::steady_clock;
@@ -113,7 +116,10 @@ bool InitPipelineAtResolution(const core::Resolution& in,
                       g_output_res.width, g_output_res.height,
                       in.width, in.height, out.width, out.height);
         g_rt_pipeline->OnDeviceLost();
-        g_pipe_ready = false;
+        g_pipe_ready     = false;
+        g_last_output_tex = nullptr;
+        // Flush handle cache so textures are re-opened at the new dimensions (#14).
+        if (g_rt_adapter) g_rt_adapter->InvalidateCache();
     }
 
     if (!g_rt_pipeline->Initialize(*g_rt_device, in, out,
@@ -216,7 +222,15 @@ int NewPipelineFrame(FrameSlot& slot) {
     }
 
     const bool ok = g_rt_pipeline->ExecuteFrame(fc, *g_rt_context);
+    // #15: store the reconstructed output for GetLastOutputTexture().
+    g_last_output_tex = ok && fc.output.IsValid()
+                        ? fc.output.Get()
+                        : nullptr;
     return ok ? 0 : -1;
+}
+
+graphics::IGraphicsTexture* GetLastOutputTexture() noexcept {
+    return g_last_output_tex;
 }
 
 // Issue #12: returns true only when both device AND pipeline are ready.
