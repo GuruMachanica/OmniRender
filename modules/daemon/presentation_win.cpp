@@ -19,6 +19,7 @@
 #include "pipeline_runtime.h"
 #include "presentation_win.h"
 #include "processing.h"
+#include "interop_d3d11.h"
 
 namespace omnirender::daemon {
 
@@ -181,6 +182,18 @@ int RunPresentationLoop() {
             omnirender::FenceWait waiter;
             waiter.WaitForFence(*slot, slot->payload.frame_index, 100);
 
+            // GPU sync: import color texture and acquire the keyed mutex.
+            // This blocks the CPU until the producer's GPU CopyResource is done.
+            ID3D11Texture2D* color_tex = nullptr;
+            if (slot->payload.shared_color_handle) {
+                ImportColorHandle(
+                    reinterpret_cast<HANDLE>(slot->payload.shared_color_handle),
+                    &color_tex);
+            }
+            const bool gpu_ready = color_tex && AcquireKeyedMutex(color_tex);
+            // If keyed mutex is unavailable (legacy producer), proceed anyway
+            // but accept the race; this is no worse than the previous behavior.
+
 #ifndef OMNIRENDER_LEGACY_PIPELINE
             if (RuntimeDeviceReady()) {
                 if (NewPipelineFrame(*slot) < 0) RunPassthroughFrame(*slot);
@@ -194,6 +207,10 @@ int RunPresentationLoop() {
                 RunPassthroughFrame(*slot);
             }
 #endif
+
+            // Release the keyed mutex back to the producer before marking the slot free.
+            if (gpu_ready) ReleaseKeyedMutex(color_tex);
+            if (color_tex) color_tex->Release();
 
             if (IsHudVisible() && Context() && g_rtv) {
                 Context()->OMSetRenderTargets(1, &g_rtv, nullptr);

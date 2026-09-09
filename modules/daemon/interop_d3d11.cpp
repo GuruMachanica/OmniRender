@@ -9,6 +9,7 @@
 #include <iostream>
 
 #include "../common/logging.h"
+#include "../common/shared_fence.h"
 #include "ipc_server.h"
 
 namespace omnirender::daemon {
@@ -178,6 +179,41 @@ bool ImportColorHandle(HANDLE h, ID3D11Texture2D** out) {
 
 bool ImportDepthHandle(HANDLE h, ID3D11Texture2D** out) {
     return g_consumer.ImportSharedSurface(h, out);
+}
+
+// ---------------------------------------------------------------------------
+// Keyed-mutex GPU synchronization helpers (consumer / daemon side)
+// ---------------------------------------------------------------------------
+
+bool AcquireKeyedMutex(ID3D11Texture2D* tex, UINT32 timeout_ms) noexcept {
+    if (!tex) return false;
+    IDXGIKeyedMutex* km = omnirender::GetKeyedMutex(tex);
+    if (!km) {
+        // Texture was not created with SHARED_KEYEDMUTEX (legacy producer).
+        // Caller must treat GPU ordering as UNSAFE.
+        return false;
+    }
+    // AcquireSync(kDaemonKey) blocks the CPU until the GPU has completed the
+    // producer's CopyResource + ReleaseSync(kDaemonKey). This is the only
+    // correct cross-process GPU completion barrier for D3D11.
+    HRESULT hr = km->AcquireSync(omnirender::kKeyedMutexDaemon,
+                                 static_cast<DWORD>(timeout_ms));
+    km->Release();
+    if (FAILED(hr) || hr == WAIT_TIMEOUT) {
+        OMNI_LOG_WARN("AcquireKeyedMutex: timeout or error (hr=0x%08lx)", hr);
+        return false;
+    }
+    return true;
+}
+
+void ReleaseKeyedMutex(ID3D11Texture2D* tex) noexcept {
+    if (!tex) return;
+    IDXGIKeyedMutex* km = omnirender::GetKeyedMutex(tex);
+    if (!km) return;
+    // ReleaseSync(kProducerKey) returns ownership to the producer so it
+    // can write the next frame.
+    km->ReleaseSync(omnirender::kKeyedMutexProducer);
+    km->Release();
 }
 
 }  // namespace omnirender::daemon

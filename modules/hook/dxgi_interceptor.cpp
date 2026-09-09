@@ -14,6 +14,7 @@
 #include "../common/halton.h"
 #include "../common/logging.h"
 #include "../common/ring_buffer.h"
+#include "../common/shared_fence.h"
 #include "../common/vtable_hook.h"
 
 namespace omnirender::hook {
@@ -115,7 +116,7 @@ bool EnsureSharedTextures(IDXGISwapChain* swap) {
     shared_desc.SampleDesc.Count   = 1;
     shared_desc.Usage              = D3D11_USAGE_DEFAULT;
     shared_desc.BindFlags          = D3D11_BIND_SHADER_RESOURCE;
-    shared_desc.MiscFlags          = D3D11_RESOURCE_MISC_SHARED;
+    shared_desc.MiscFlags          = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     shared_desc.CPUAccessFlags     = 0;
 
     if (FAILED(g_d3d11_device->CreateTexture2D(&shared_desc, nullptr, &g_shared_color_tex))) {
@@ -128,14 +129,19 @@ bool EnsureSharedTextures(IDXGISwapChain* swap) {
     }
 
     // Depth texture: created but never populated by the DXGI path.
-    // Marked depth_valid=false in the IPC flags so the daemon doesn't treat it as valid.
-    shared_desc.Format = DXGI_FORMAT_R32_FLOAT;
+    // Uses SHARED_KEYEDMUTEX so the daemon can safely open it even if unused.
+    shared_desc.Format   = DXGI_FORMAT_R32_FLOAT;
+    shared_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     if (SUCCEEDED(g_d3d11_device->CreateTexture2D(&shared_desc, nullptr, &g_shared_depth_tex))) {
         IDXGIResource* dres = nullptr;
         if (SUCCEEDED(g_shared_depth_tex->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(&dres)))) {
             dres->GetSharedHandle(&g_shared_depth_handle);
             dres->Release();
         }
+        // Initialize keyed mutex to producer-owned state (key=0) so the
+        // daemon's first AcquireSync(kDaemonKey=1) waits properly.
+        IDXGIKeyedMutex* km = omnirender::GetKeyedMutex(g_shared_depth_tex);
+        if (km) { km->AcquireSync(omnirender::kKeyedMutexProducer, INFINITE); km->Release(); }
     }
 
     IDXGIDevice* dxgi_dev = nullptr;
@@ -180,7 +186,27 @@ void CaptureFrameDXGI(IDXGISwapChain* swap) {
         omnirender::SetState(*slot, omnirender::SlotState::Free);
         return;
     }
-    g_d3d11_context->CopyResource(g_shared_color_tex, backbuffer);
+    // GPU-correct copy path using IDXGIKeyedMutex.
+    // AcquireSync(kProducerKey) waits until the daemon has released the texture.
+    // CopyResource queues the GPU copy.
+    // ReleaseSync(kDaemonKey) tells the GPU: signal daemon when copy is done.
+    IDXGIKeyedMutex* km = omnirender::GetKeyedMutex(g_shared_color_tex);
+    if (km) {
+        if (FAILED(km->AcquireSync(omnirender::kKeyedMutexProducer, 16))) {
+            // Daemon is holding the texture (slow frame); skip capture this frame.
+            km->Release();
+            omnirender::SetState(*slot, omnirender::SlotState::Free);
+            backbuffer->Release();
+            return;
+        }
+        g_d3d11_context->CopyResource(g_shared_color_tex, backbuffer);
+        km->ReleaseSync(omnirender::kKeyedMutexDaemon);  // GPU: hand off to daemon
+        km->Release();
+    } else {
+        // Fallback: no keyed mutex (shouldn't happen for SHARED_KEYEDMUTEX textures).
+        g_d3d11_context->CopyResource(g_shared_color_tex, backbuffer);
+        OMNI_LOG_WARN("DXGI: keyed mutex unavailable; GPU sync not guaranteed");
+    }
     backbuffer->Release();
 
     DXGI_SWAP_CHAIN_DESC desc{};
