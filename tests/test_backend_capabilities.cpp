@@ -261,8 +261,13 @@ static void TestXessAdapterExecution() {
     });
 
     assert(graph.Compile());
-    assert(graph.Execute(ctx));
-    assert(ctx.color.source == DataSource::Reconstructed);
+    // Commit 9 contract: XeSS must NOT claim success until the real
+    // xessD3D11Execute path is implemented. The adapter must reject
+    // execution (so the pipeline falls back to the spatial path) rather
+    // than fabricating DataSource::Reconstructed on absent hardware.
+    assert(!graph.Execute(ctx));
+    assert(adapter.Execute(ctx) == false);
+    assert(ctx.color.source != DataSource::Reconstructed);
 
     adapter.Shutdown();
     printf("[PASS] TestXessAdapterExecution\n");
