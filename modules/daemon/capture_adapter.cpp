@@ -119,9 +119,9 @@ EnsurePixelUploadTexture(graphics::IGraphicsDevice& device,
         // The GL CPU pixel block holds RGBA byte order (glReadPixels GL_RGBA),
         // so the upload texture must be R8G8B8A8 — a BGRA8 view would swap
         // red and blue. The GL hook publishes color_format=28 accordingly.
-        TextureDesc desc{ width, height, 1, TextureFormat::R8G8B8A8_UNORM,
-            TextureUsage::ShaderResource | TextureUsage::RenderTarget |
-            TextureUsage::TransferDst | TextureUsage::TransferSrc,
+        core::TextureDesc desc{ width, height, 1, core::TextureFormat::R8G8B8A8_UNORM,
+            core::TextureUsage::ShaderResource | core::TextureUsage::RenderTarget |
+            core::TextureUsage::TransferDst | core::TextureUsage::TransferSrc,
             "GLCpuPixelColor" };
         tex = device.CreateTexture(desc);
         tex_w = tex ? width : 0;
