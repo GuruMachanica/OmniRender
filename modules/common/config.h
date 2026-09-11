@@ -126,8 +126,25 @@ inline bool g_enable_optical_flow   = false;
 inline bool g_enable_dlss           = false;
 inline bool g_enable_trt_tonemap    = false;
 inline bool g_enable_xess           = false;
-inline bool g_enable_fsr            = false;
+inline bool g_enable_fsr            = true;   // vendor-neutral fallback upscaler
 inline bool g_enable_rt_effects     = false;
+
+// ---------------------------------------------------------------------------
+// Output resolution policy (audit: "upscaling never engages" fix).
+//
+// The game's swapchain size is the *input* resolution. The daemon decides the
+// *output* (presented) resolution itself — the hook only renders at native.
+// One of these modes applies whenever g_enable_upscale is true:
+//
+//   "native"  — output = input (no scaling; original behavior)
+//   "screen"  — output = desktop resolution of the overlay (best default)
+//   "quality" — output = input * 1.5
+//   "ultra"   — output = input * 2.0
+//   "custom"  — output = (output_width, output_height) below
+// ---------------------------------------------------------------------------
+inline std::string g_output_scale_mode   = "screen";
+inline UINT         g_output_width       = 1920;  // "custom" mode only
+inline UINT         g_output_height      = 1080;
 
 // Working-resolution ceiling (pixels). The pipeline clamps the input
 // frame down to this size before any history-keeping pass so the

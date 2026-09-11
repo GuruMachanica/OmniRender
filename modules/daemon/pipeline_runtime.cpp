@@ -33,8 +33,60 @@
 
 #include "../../runtime/Pipeline.h"
 #include "../../backends/reconstruction/dlss/DlssReconstructionBackend.h"
+#include "../../backends/reconstruction/spatial/SpatialUpscaleBackend.h"
 #include "../../graphics/d3d11/D3D11GraphicsDevice.h"
 #include "../../graphics/d3d11/D3D11CommandContext.h"
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Output resolution policy (audit fix). The hook renders at the game's native
+// swapchain size; the daemon decides what it presents. Modes are documented
+// in modules/common/config.h. Result is always clamped to sane bounds.
+// ---------------------------------------------------------------------------
+core::Resolution ResolveOutputResolution(const core::Resolution& input) {
+    if (!omnirender::config::g_enable_upscale) return input;
+
+    const std::string& mode = omnirender::config::g_output_scale_mode;
+    core::Resolution out = input;
+
+    if (mode == "native") {
+        return input;
+    } else if (mode == "screen") {
+        // Desktop resolution of the primary display. The overlay window covers
+        // the whole screen, so this is the natural "fill the monitor" target.
+        HMONITOR mon = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        if (mon && GetMonitorInfoW(mon, &mi)) {
+            out = { static_cast<uint32_t>(mi.rcMonitor.right - mi.rcMonitor.left),
+                    static_cast<uint32_t>(mi.rcMonitor.bottom - mi.rcMonitor.top) };
+        } else {
+            out = { omnirender::config::g_output_width,
+                    omnirender::config::g_output_height };
+        }
+    } else if (mode == "quality") {
+        out = { input.width * 3u / 2u, input.height * 3u / 2u };
+    } else if (mode == "ultra") {
+        out = { input.width * 2u, input.height * 2u };
+    } else if (mode == "custom") {
+        out = { omnirender::config::g_output_width,
+                omnirender::config::g_output_height };
+    } else {
+        // Unknown mode string: fail safe to the documented default.
+        out = { omnirender::config::g_output_width,
+                omnirender::config::g_output_height };
+    }
+
+    // Never present *below* the input resolution (that would be a downscale)
+    // and never blow past reasonable 4K+ bounds.
+    if (out.width < input.width)   out.width = input.width;
+    if (out.height < input.height) out.height = input.height;
+    if (out.width == 0 || out.height == 0) out = input;
+    return out;
+}
+
+}  // namespace
 
 namespace omnirender::daemon {
 
@@ -97,9 +149,10 @@ bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
                           in.width, in.height, out.width, out.height);
             return true;
         }
-        OMNI_LOG_INFO("runtime pipeline: DLSS init failed (state=%s)", dlss->GetStateString());
+        OMNI_LOG_INFO("runtime pipeline: DLSS init failed (state=%s); falling back to spatial",
+                      dlss->GetStateString());
         g_core_dlss.reset();
-        return false;
+        // Fall through to the FSR spatial fallback below.
     }
     if (omnirender::config::g_enable_xess) {
         auto& xess = upscaler::GetGlobalXessAdapter();
@@ -110,7 +163,27 @@ bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
                           "skipping attach (spatial fallback will be used)");
         }
     }
-    OMNI_LOG_INFO("runtime pipeline: no reconstruction backend (spatial-only)");
+
+    // Fallback: FSR 1.0 (EASU + RCAS) spatial upscaling. This runs on every
+    // vendor and needs no SDK — only the two compiled CSOs shipped next to
+    // the daemon. It is what actually performs upscaling on non-DLSS GPUs
+    // (and on NVIDIA boxes where NGX is absent).
+    if (omnirender::config::g_enable_upscale && omnirender::config::g_enable_fsr) {
+        auto spatial = std::make_shared<backends::spatial::SpatialUpscaleBackend>();
+        spatial->SetSharpness(0.75f);
+        // Pipeline::SetReconstructionBackend runs Initialize(*device, in, out)
+        // and drops the backend on failure, mirroring the DLSS attach above.
+        g_rt_pipeline->SetReconstructionBackend(spatial);
+        if (spatial->IsRuntimeAvailable()) {
+            OMNI_LOG_INFO("runtime pipeline: FSR spatial attached (%ux%u -> %ux%u)",
+                          in.width, in.height, out.width, out.height);
+            return true;
+        }
+        OMNI_LOG_WARN("runtime pipeline: FSR spatial init failed: %s",
+                      spatial->LastErrorString().c_str());
+        spatial->Shutdown();
+    }
+    OMNI_LOG_INFO("runtime pipeline: no reconstruction backend (passthrough)");
     return false;
 }
 
@@ -200,12 +273,11 @@ int NewPipelineFrame(FrameSlot& slot) {
     const uint32_t ih = slot.payload.surface_height;
     if (iw == 0 || ih == 0) return -1;
 
-    // Read real output resolution from IPC payload (issue #1).
-    const uint32_t ow = slot.payload.target_width  ? slot.payload.target_width  : iw;
-    const uint32_t oh = slot.payload.target_height ? slot.payload.target_height : ih;
-
+    // Output resolution is a daemon-side decision (renderer.output_scale),
+    // not a hook-side field. Hooks publish target == surface; overriding it
+    // here is what actually lets the upscale path engage.
     const core::Resolution in{ iw, ih };
-    const core::Resolution out{ ow, oh };
+    const core::Resolution out = ResolveOutputResolution(in);
 
     const core::TextureFormat fmt =
         CaptureAdapter::ToDxgiFormat(slot.payload.color_format);
@@ -231,6 +303,11 @@ int NewPipelineFrame(FrameSlot& slot) {
         return -1;
     }
 
+    // Hooks publish target == surface (they never know the display intent);
+    // the daemon-owned output policy wins here so the backend pass sees the
+    // real upscale target every frame.
+    fc.output_resolution = out;
+
     const bool ok = g_rt_pipeline->ExecuteFrame(fc, *g_rt_context);
     // #15: store the reconstructed output for GetLastOutputTexture().
     g_last_output_tex = ok && fc.output.IsValid()
@@ -241,6 +318,11 @@ int NewPipelineFrame(FrameSlot& slot) {
 
 graphics::IGraphicsTexture* GetLastOutputTexture() noexcept {
     return g_last_output_tex;
+}
+
+void GetLastOutputResolution(uint32_t* width, uint32_t* height) noexcept {
+    if (width)  *width  = g_last_output_tex ? g_last_output_tex->GetWidth()  : 0;
+    if (height) *height = g_last_output_tex ? g_last_output_tex->GetHeight() : 0;
 }
 
 // Issue #12: returns true only when both device AND pipeline are ready.

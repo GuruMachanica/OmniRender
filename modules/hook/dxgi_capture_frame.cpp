@@ -45,7 +45,11 @@ void CaptureFrameDXGI(IDXGISwapChain* swap) {
     // GPU-correct copy: AcquireSync -> CopyResource -> ReleaseSync.
     IDXGIKeyedMutex* km = omnirender::GetKeyedMutex(g_shared_color_tex);
     if (km) {
-        if (FAILED(km->AcquireSync(omnirender::kKeyedMutexProducer, 16))) {
+        // 100 ms patience: the daemon holds the mutex for its whole pipeline
+        // read window (linearize + temporal + DLSS/FSR), which can exceed a
+        // single vsync on heavy frames. Skipping here only when the daemon is
+        // genuinely stuck avoids flapping capture on slower GPUs.
+        if (FAILED(km->AcquireSync(omnirender::kKeyedMutexProducer, 100))) {
             km->Release();
             omnirender::SetState(*slot, omnirender::SlotState::Free);
             backbuffer->Release();

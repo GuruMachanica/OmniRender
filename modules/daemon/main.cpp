@@ -121,6 +121,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     omnirender::config::g_enable_rt_effects =
         cfg.GetBool("pipeline.enable_rt_effects", false);
 
+    // Output resolution policy (audit fix: hooks always published
+    // target == surface, so the upscale path could never engage).
+    omnirender::config::g_output_scale_mode =
+        cfg.GetString("renderer.output_scale", "screen");
+    omnirender::config::g_output_width = static_cast<UINT>(
+        cfg.GetInt("renderer.output_width", 1920));
+    omnirender::config::g_output_height = static_cast<UINT>(
+        cfg.GetInt("renderer.output_height", 1080));
+
     omnirender::config::g_max_work_width =
         static_cast<UINT>(cfg.GetInt("pipeline.max_work_width",
                                     static_cast<int64_t>(omnirender::kDefaultMaxProcessingWidth)));

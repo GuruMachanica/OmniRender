@@ -9,6 +9,8 @@ if(WIN32)
         reconstruction/dlss/DlssLoader.cpp
         reconstruction/dlss/DlssReconstructionBackend.h
         reconstruction/dlss/DlssReconstructionBackend.cpp
+        reconstruction/spatial/SpatialUpscaleBackend.h
+        reconstruction/spatial/SpatialUpscaleBackend.cpp
     )
 else()
     # Vendor SDK backends are Windows-only. Keep the static library non-empty

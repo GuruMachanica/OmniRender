@@ -169,6 +169,60 @@ int RunPresentationLoop() {
 
         omnirender::FrameSlot* slot = nullptr;
         if (ConsumeFrame(slot) && slot) {
+
+#ifndef OMNIRENDER_LEGACY_PIPELINE
+            // Process BEFORE sizing the swapchain: the runtime pipeline may
+            // upscale, and the presented swapchain must match the *output*
+            // resolution, not the game's input resolution. Otherwise an
+            // upscaled frame would be resampled back down at present.
+            const int pipe_rc = RuntimeDeviceReady() ? NewPipelineFrame(*slot) : -1;
+            graphics::IGraphicsTexture* out_tex =
+                (pipe_rc == 0) ? GetLastOutputTexture() : nullptr;
+
+            uint32_t present_w = slot->payload.surface_width;
+            uint32_t present_h = slot->payload.surface_height;
+            static bool ever_upscaled = false;
+            if (out_tex && out_tex->GetNativeSrv()) {
+                present_w = out_tex->GetWidth();
+                present_h = out_tex->GetHeight();
+                ever_upscaled = true;
+            } else if (ever_upscaled) {
+                // Sticky upscaled size: a single failed pipeline frame must not
+                // flap the swapchain between output and input resolutions.
+                // Passthrough blits stretch the input to fill the swapchain.
+                present_w = last_width;
+                present_h = last_height;
+            }
+            if (present_w != last_width || present_h != last_height) {
+                if (g_rtv)       { g_rtv->Release();       g_rtv = nullptr; }
+                if (g_swapchain) { g_swapchain->Release(); g_swapchain = nullptr; }
+                if (!CreateSwapChain(present_w, present_h)) {
+                    ReleaseFrame(*slot);
+                    continue;
+                }
+                last_width  = present_w;
+                last_height = present_h;
+            }
+
+            omnirender::FenceWait waiter;
+            waiter.WaitForFence(*slot, slot->payload.frame_index, 100);
+
+            // NOTE: keyed-mutex acquire/release is owned by CaptureAdapter
+            // (inside NewPipelineFrame's Adapt()); do not double-acquire here.
+            // The passthrough path below reads the shared texture directly,
+            // which is the pre-mutex legacy behavior — acceptable because
+            // passthrough only runs while the runtime pipeline is down.
+
+            if (out_tex && out_tex->GetNativeSrv()) {
+                // Blit reconstructed output at its native (upscaled) size.
+                ID3D11ShaderResourceView* srv =
+                    static_cast<ID3D11ShaderResourceView*>(out_tex->GetNativeSrv());
+                BlitFrame(srv, static_cast<UINT>(last_width),
+                               static_cast<UINT>(last_height));
+            } else {
+                RunPassthroughFrame(*slot);
+            }
+#else
             if (slot->payload.surface_width != last_width || slot->payload.surface_height != last_height) {
                 if (g_rtv)       { g_rtv->Release();       g_rtv = nullptr; }
                 if (g_swapchain) { g_swapchain->Release(); g_swapchain = nullptr; }
@@ -191,27 +245,7 @@ int RunPresentationLoop() {
                     &color_tex);
             }
             const bool gpu_ready = color_tex && AcquireKeyedMutex(color_tex);
-            // If keyed mutex is unavailable (legacy producer), proceed anyway
-            // but accept the race; this is no worse than the previous behavior.
 
-#ifndef OMNIRENDER_LEGACY_PIPELINE
-            if (RuntimeDeviceReady()) {
-                const int pipe_rc = NewPipelineFrame(*slot);
-                // #15: present the reconstructed output if the pipeline produced one.
-                graphics::IGraphicsTexture* out_tex = GetLastOutputTexture();
-                if (pipe_rc == 0 && out_tex && out_tex->GetNativeSrv()) {
-                    // Blit reconstructed output to overlay swapchain.
-                    ID3D11ShaderResourceView* srv =
-                        static_cast<ID3D11ShaderResourceView*>(out_tex->GetNativeSrv());
-                    BlitFrame(srv, static_cast<UINT>(last_width),
-                                   static_cast<UINT>(last_height));
-                } else {
-                    RunPassthroughFrame(*slot);
-                }
-            } else {
-                RunPassthroughFrame(*slot);
-            }
-#else
             if (PipelineReady()) {
                 if (RunPipelineFrame(*slot) < 0) RunPassthroughFrame(*slot);
             } else {
@@ -220,8 +254,10 @@ int RunPresentationLoop() {
 #endif
 
             // Release the keyed mutex back to the producer before marking the slot free.
+#ifdef OMNIRENDER_LEGACY_PIPELINE
             if (gpu_ready) ReleaseKeyedMutex(color_tex);
             if (color_tex) color_tex->Release();
+#endif
 
             if (IsHudVisible() && Context() && g_rtv) {
                 Context()->OMSetRenderTargets(1, &g_rtv, nullptr);

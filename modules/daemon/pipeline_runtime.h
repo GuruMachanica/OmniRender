@@ -26,4 +26,9 @@ bool RuntimePipelineReady();
 // or nullptr if none. Do NOT hold this pointer across frames (#15).
 graphics::IGraphicsTexture* GetLastOutputTexture() noexcept;
 
+// Dimensions of the last processed output (0,0 before the first frame).
+// Presentation uses this to size the swapchain to the *upscaled* resolution
+// instead of the game's input resolution.
+void GetLastOutputResolution(uint32_t* width, uint32_t* height) noexcept;
+
 }  // namespace omnirender::daemon

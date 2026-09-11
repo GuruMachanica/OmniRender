@@ -10,6 +10,29 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ### Added
+- **FSR 1.0 spatial upscaling backend for the runtime pipeline** — the
+  real EASU + RCAS compute dispatch (`backends/reconstruction/spatial/`)
+  now runs when DLSS is unavailable, on every vendor, with no SDK. It
+  allocates exactly two output-resolution textures (EASU target, RCAS
+  target) plus two constant buffers — no full-res intermediates, bounded
+  VRAM by construction. Backend priority is DLSS → FSR → passthrough.
+- **Daemon-owned output resolution policy** (`renderer.output_scale`:
+  `native` / `screen` / `quality` / `ultra` / `custom`). Hooks always
+  published `target == surface`, which meant the upscale path could never
+  engage; the daemon now decides the presented resolution itself and
+  overrides `fc.output_resolution` per frame. Presentation re-sizes the
+  overlay swapchain to the *upscaled* output (sticky across single-frame
+  pipeline failures so the swapchain does not flap).
+
+### Changed
+- **Keyed-mutex ownership moved into `CaptureAdapter`** — the mutex on the
+  imported color texture is acquired inside `Adapt()` (before any pipeline
+  read) and released on the next `Adapt()`/destruction. The presentation
+  loop no longer acquires it, removing both a double-acquire hazard and a
+  read-before-acquire race introduced by processing frames before
+  presentation sizing.
+- FSR is enabled by default (`pipeline.enable_fsr = true`) since it is
+  the only working vendor-neutral upscaler.
 - **Depth linearization (`DepthProvider`)** — audit plan Commit 6, the last
   major temporal-pass gap. Raw game depth (non-linear NDC, possibly
   reversed-Z) is now converted to linearized [0,1] view depth before any

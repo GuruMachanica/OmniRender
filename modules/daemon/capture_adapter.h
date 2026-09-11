@@ -11,6 +11,9 @@
 //   - Validate texture dimensions against declared resolution (FrameContext::IsValid).
 //   - Populate FrameValidity respecting IpcFlag::DepthRaw / CameraZero.
 //   - Translate DXGI_FORMAT to core::TextureFormat.
+//   - Keyed-mutex ownership: acquires the producer's mutex on the imported
+//     color texture inside Adapt() and releases it on destruction/next call,
+//     so consumers never race the hook's GPU copy.
 #pragma once
 
 #include <cstdint>
@@ -29,19 +32,29 @@ class IGraphicsDevice;
 class IGraphicsTexture;
 }
 
+// Keyed-mutex handle type. D3D11's ID3D11Texture2D is a struct, so a global-
+// scope forward declaration composes with <d3d11.h> regardless of include order.
+struct ID3D11Texture2D;
+
 namespace omnirender::daemon {
 
 class CaptureAdapter {
 public:
     explicit CaptureAdapter(graphics::IGraphicsDevice& device) noexcept
         : device_(device) {}
-    ~CaptureAdapter() { UnmapPixelBlock(); }
+    ~CaptureAdapter() { ReleaseKeyedMutexIfHeld(); UnmapPixelBlock(); }
 
     // Translate one IPC payload into a core::FrameContext.
     // The resulting GpuTextures are reference-counted; texture objects are
     // reused across frames when the shared handle has not changed (#14).
     // When the payload carries a CPU pixel block (OpenGL fallback path), the
     // pixels are mapped and uploaded into an owned color texture instead.
+    //
+    // Keyed-mutex contract: Adapt() acquires the producer's mutex on the
+    // shared color texture before returning and holds it for the pipeline's
+    // read window; the next Adapt() call (or the destructor) releases it.
+    // This is deliberate backpressure — the hook cannot overwrite the slot's
+    // texture while the daemon is still reading it.
     [[nodiscard]] core::FrameContext Adapt(
         const OmniRenderIPCFrameData& payload);
 
@@ -65,6 +78,11 @@ private:
     graphics::IGraphicsDevice& device_;
     CachedTexture color_cache_;
     CachedTexture depth_cache_;
+
+    // Keyed mutex currently held on the imported color texture (nullptr if
+    // none). Released on the next Adapt() call or in the destructor.
+    ID3D11Texture2D* mutex_acquired_ = nullptr;
+    void ReleaseKeyedMutexIfHeld() noexcept;
 
     // CPU pixel fallback channel (OpenGL without WGL_NV_DX_interop2).
     void*    pixel_mapping_   = nullptr;  // HANDLE, void* to keep this header platform-neutral

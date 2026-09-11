@@ -255,6 +255,11 @@ ConfigStore DefaultProfile() {
     c.Set("renderer.upscaler", "auto");
     c.Set("renderer.quality",  "quality");
     c.Set("renderer.sharpen",  "0.25");
+    // Output resolution policy: what the daemon presents, regardless of the
+    // game's internal render size. See config.h for the mode list.
+    c.Set("renderer.output_scale",  "screen");
+    c.Set("renderer.output_width",  "2560");
+    c.Set("renderer.output_height", "1440");
     // [temporal]
     c.Set("temporal.enabled",  "true");
     c.Set("temporal.history",  "8");

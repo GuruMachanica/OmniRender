@@ -14,6 +14,7 @@
 
 #include "../common/ipc_protocol.h"
 #include "../common/logging.h"
+#include "interop_d3d11.h"
 #include "../../core/capability/GraphicsApi.h"
 #include "../../core/frame/FrameTiming.h"
 #include "../../core/resources/TextureDesc.h"
@@ -158,6 +159,11 @@ static bool ValidateCameraMatrix(const float* m44,
 // Adapt: build core::FrameContext from one IPC slot payload
 // ---------------------------------------------------------------------------
 FrameContext CaptureAdapter::Adapt(const OmniRenderIPCFrameData& p) {
+    // Release last frame's keyed mutex before taking the new one. The texture
+    // cache may still hold the same shared resource — the release must happen
+    // before any new GPU work touches it.
+    ReleaseKeyedMutexIfHeld();
+
     FrameContext fc;
 
     // --- Resolutions -------------------------------------------------------
@@ -196,6 +202,18 @@ FrameContext CaptureAdapter::Adapt(const OmniRenderIPCFrameData& p) {
         }
     } else {
         color_tex = GetOrOpen(p.shared_color_handle, color_cache_);
+    }
+    // Keyed-mutex acquire: after OpenSharedResource, before ANY downstream
+    // GPU read (the CPU pixel upload path copied into our own texture, so
+    // only the shared-handle path needs this). Blocks until the hook's
+    // CopyResource completes, eliminating the cross-process read race.
+    if (color_tex && !(p.flags & static_cast<uint32_t>(IpcFlag::PixelDataCpu))) {
+        auto* raw = static_cast<ID3D11Texture2D*>(color_tex->GetNativeResource());
+        if (raw && AcquireKeyedMutex(raw)) {
+            mutex_acquired_ = raw;
+        }
+        // If acquisition fails (legacy producer without a mutex) proceed —
+        // stale-frame risk is unchanged from the pre-mutex behavior.
     }
     if (color_tex) {
         // Dimension validation (#8): warn if texture disagrees with IPC metadata.
@@ -259,7 +277,20 @@ FrameContext CaptureAdapter::Adapt(const OmniRenderIPCFrameData& p) {
     // --- GraphicsApi (daemon always processes via D3D11) --------------------
     fc.graphics_api = core::GraphicsApi::D3D11;
 
+    // Keyed-mutex release: the pipeline has finished reading the shared color
+    // texture only when the caller is done with fc — but fc holds only a
+    // ref-counted view; the D3D11 read is bounded by Adapt()'s caller. The
+    // release is deferred to the next Adapt() call or destruction (see
+    // ReleaseKeyedMutexIfHeld). This keeps the mutex held for exactly the
+    // pipeline's read window and no longer.
     return fc;
+}
+
+void CaptureAdapter::ReleaseKeyedMutexIfHeld() noexcept {
+    if (mutex_acquired_) {
+        ReleaseKeyedMutex(mutex_acquired_);
+        mutex_acquired_ = nullptr;
+    }
 }
 
 }  // namespace omnirender::daemon

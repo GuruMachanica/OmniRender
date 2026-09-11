@@ -31,6 +31,9 @@ ignored.
 upscaler = "auto"        # auto | dlss | fsr | cas | off
 quality  = "quality"     # performance | balanced | quality | ultra
 sharpen  = 0.25          # float in [0.0, 1.0]
+output_scale = "screen"  # native | screen | quality | ultra | custom
+output_width = 2560      # "custom" mode only
+output_height = 1440     # "custom" mode only
 
 [temporal]
 enabled = true
@@ -44,7 +47,27 @@ exclude = true
 enable_reconstruction = true
 enable_upscale        = true
 enable_tonemap        = true
+enable_fsr            = true   # vendor-neutral FSR 1.0 fallback upscaler
+enable_dlss           = false  # NVIDIA NGX; falls back to FSR when absent
 ```
+
+### Output resolution policy
+
+The game renders at its native swapchain size (the *input*). The daemon
+decides what to *present* — this is what makes upscaling actually engage:
+
+| `renderer.output_scale` | Presented resolution                     |
+|-------------------------|------------------------------------------|
+| `native`                | same as the game (no scaling)            |
+| `screen` (default)      | the desktop resolution of the overlay    |
+| `quality`               | input × 1.5                              |
+| `ultra`                 | input × 2.0                              |
+| `custom`                | `renderer.output_width` × `output_height`|
+
+The presented resolution is never allowed to drop below the input
+(downscaling is out of scope). Backend selection order: DLSS when
+available and enabled, else FSR 1.0 (EASU + RCAS) on any GPU, else
+passthrough.
 
 A sample profile for Skyrim is at
 [`docs/profiles/skyrim.toml`](./profiles/skyrim.toml).
