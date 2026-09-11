@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -33,9 +34,9 @@ omnirender::RingControlBlock* g_ring = nullptr;
 std::atomic<uint64_t>         g_gl_frame_index { 0 };
 std::atomic<int>              g_last_width  { 0 };
 std::atomic<int>              g_last_height { 0 };
-std::vector<uint8_t>          g_pixels;
 
-void PublishGLFrame(int width, int height, HANDLE shared_color_handle, const void* pixels_bgra) {
+void PublishGLFrame(int width, int height, HANDLE shared_color_handle,
+                    const char* pixel_block_name, uint32_t pixel_size, uint32_t pixel_pitch) {
     if (g_ring == nullptr) {
         HANDLE mapping = ::OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, omnirender::kIPCBlockName);
         if (!mapping) {
@@ -69,18 +70,32 @@ void PublishGLFrame(int width, int height, HANDLE shared_color_handle, const voi
     omnirender::FrameSlot* slot = &g_ring->slots[slot_idx];
 
     slot->payload.magic_header         = omnirender::kIpcMagic;
-    slot->payload.struct_version       = omnirender::kIpcVersion_V040;
+    slot->payload.struct_version       = omnirender::kIpcVersion_V050;
     slot->payload.frame_index          = p_seq + 1;
     slot->payload.surface_width        = static_cast<uint32_t>(width);
     slot->payload.surface_height       = static_cast<uint32_t>(height);
     slot->payload.target_width         = static_cast<uint32_t>(width);
     slot->payload.target_height        = static_cast<uint32_t>(height);
-    slot->payload.color_format         = 0x00000015;  // B8G8R8A8_UNORM
-    slot->payload.depth_format         = 0;
+    // Color format must match the actual byte layout of the source:
+    // zero-copy interop shares a true BGRA8 D3D11 texture (87);
+    // the CPU pixel block holds RGBA byte order from glReadPixels (28).
+    slot->payload.color_format         = (shared_color_handle != nullptr) ? 87 : 28;
+    slot->payload.depth_format         = 0;   // no GL depth capture yet (planned)
     slot->payload.motion_format        = 0;
     slot->payload.shared_color_handle  = reinterpret_cast<uint64_t>(shared_color_handle);
     slot->payload.shared_depth_handle  = 0;
     slot->payload.shared_motion_handle = 0;
+    // CPU pixel fallback channel (used when shared_color_handle is null).
+    if (pixel_block_name && shared_color_handle == nullptr) {
+        ::strncpy_s(slot->payload.pixel_block_name, pixel_block_name,
+                    sizeof(slot->payload.pixel_block_name) - 1);
+        slot->payload.pixel_data_size = pixel_size;
+        slot->payload.pixel_row_pitch = pixel_pitch;
+    } else {
+        slot->payload.pixel_block_name[0] = '\0';
+        slot->payload.pixel_data_size = 0;
+        slot->payload.pixel_row_pitch = 0;
+    }
     slot->payload.camera_near          = 0.1f;
     slot->payload.camera_far           = 1000.0f;
     slot->payload.fov_vertical_rad     = 1.0471975512f;
@@ -92,9 +107,21 @@ void PublishGLFrame(int width, int height, HANDLE shared_color_handle, const voi
         slot->payload.view_proj_current[i]  = 0.0f;
         slot->payload.view_proj_previous[i] = 0.0f;
     }
-    slot->payload.flags = (shared_color_handle != nullptr) ? 0x01 : 0x00;  // 0x01 = Hardware Zero-Copy Shared Handle
+    // Flag semantics must use the shared IpcFlag enum: 0x01 previously
+    // collided with IpcFlag::ReversedZ and made the daemon flip depth
+    // interpretation for no reason.
+    uint32_t gl_flags = 0;
+    if (shared_color_handle != nullptr) {
+        // zero-copy GPU shared handle; nothing extra to flag
+    } else if (slot->payload.pixel_data_size > 0) {
+        gl_flags |= static_cast<uint32_t>(omnirender::IpcFlag::PixelDataCpu);
+    } else {
+        // No interop AND no pixel block: nothing to consume.
+        omnirender::SetState(*slot, omnirender::SlotState::Free);
+        return;
+    }
+    slot->payload.flags = gl_flags;
 
-    (void)pixels_bgra;
     slot->fence.store(slot->payload.frame_index, std::memory_order_release);
     g_ring->producer_seq.store(p_seq + 1, std::memory_order_release);
     omnirender::SetState(*slot, omnirender::SlotState::Ready);
@@ -141,13 +168,18 @@ extern "C" BOOL WINAPI Hooked_wglSwapBuffers(HDC hdc) {
             // Priority 1: Hardware zero-copy WGL_NV_DX_interop2 pathway
             HANDLE shared_handle = CaptureGLFrameZeroCopy(hdc, w, h);
             if (shared_handle) {
-                PublishGLFrame(w, h, shared_handle, nullptr);
+                PublishGLFrame(w, h, shared_handle, nullptr, 0, 0);
             } else {
-                // Fallback: CPU glReadPixels staging readback
-                size_t need = static_cast<size_t>(w) * h * 4;
-                if (g_pixels.size() < need) g_pixels.resize(need);
-                ::glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels.data());
-                PublishGLFrame(w, h, nullptr, g_pixels.data());
+                // Fallback: CPU shared-memory pixel transport (real cross-process
+                // channel; the daemon uploads these pixels into its own texture).
+                const char* block_name = nullptr;
+                uint32_t    block_size = 0;
+                uint32_t    block_pitch = 0;
+                if (CaptureGLFrameCpu(hdc, w, h, &block_name, &block_size, &block_pitch)) {
+                    PublishGLFrame(w, h, nullptr, block_name, block_size, block_pitch);
+                } else {
+                    PublishGLFrame(w, h, nullptr, nullptr, 0, 0);
+                }
             }
         }
     }

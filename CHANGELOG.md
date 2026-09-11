@@ -9,7 +9,54 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+- **Depth linearization (`DepthProvider`)** — audit plan Commit 6, the last
+  major temporal-pass gap. Raw game depth (non-linear NDC, possibly
+  reversed-Z) is now converted to linearized [0,1] view depth before any
+  consumer uses it:
+  - New `core/temporal/DepthProvider` pass (GPU path via
+    `DepthLinearize.cso`, CPU fallback via new
+    `ICommandContext::ReadbackTexture` staging readback on D3D11).
+  - `shaders/temporal/DepthLinearize.hlsl` handles standard- and reversed-Z
+    (flag carried through `ReprojectionCB._pad`).
+  - `runtime::Pipeline` runs it first in the graph; disocclusion and the
+    previous-depth history now consume linearized depth (matching domains),
+    while motion reprojection keeps consuming raw NDC depth for
+    unprojection.
+- **Canonical temporal shaders now compile.** `shaders/temporal/*.hlsl`
+  (`MotionReproject`, `Disocclusion`, `ReactiveMask`, `DepthLinearize`) are
+  compiled to CSO by the daemon shader step and copied next to the daemon,
+  `gpu_test_host`, and `test_core_d3d11_execution`, so the core passes'
+  optional GPU accelerators actually activate when DXC is installed (audit
+  plan Commit 1 remainder).
+- **OpenGL CPU-fallback pixel transport** — audit plan Commit 10. When
+  `WGL_NV_DX_interop2` is unavailable, the GL hook now ships real pixels to
+  the daemon instead of discarding the readback: a named shared file mapping
+  (`Local\OmniRender_GL_Pixels_<pid>`) carries top-down RGBA8 frames, with
+  new IPC fields (`pixel_block_name`, `pixel_data_size`, `pixel_row_pitch`,
+  `IpcFlag::PixelDataCpu`, `struct_version 2`) and daemon-side mapping + GPU
+  upload in `CaptureAdapter`. Frames with no usable color source are no
+  longer published at all.
+- **Proxy DLL artifacts.** The hook now emits drop-in `d3d9.dll`,
+  `dxgi.dll`, and `opengl32.dll` copies (all proxy entry points already
+  exported) and installs them under `bin/proxies/`.
+
 ### Fixed
+- **Wrong DXGI format IDs in hook payloads.** D3D9/OpenGL hooks published
+  `0x15` (=`R32_FLOAT_X8X24_TYPELESS`) as BGRA8 color and `0x29`/`0x22` as
+  R32F/RG16F depth/motion; DXGI published `0x29`/`0x22` too. All now use the
+  correct enum values (`87`, `41`, `34`) by name.
+- **D3D9 depth staging was fabricated.** `StretchRect` from a D24S8/D16
+  depth-stencil into an R32F render target is unsupported on D3D9; the old
+  code copied anyway and the daemon consumed garbage depth. The hook now
+  probes driver support once, copies depth only when it actually works, and
+  otherwise publishes `DepthRaw` with a zero handle so the daemon never sees
+  fake depth.
+- **OpenGL flag collision.** The GL hook flagged zero-copy frames with
+  `0x01`, which collides with `IpcFlag::ReversedZ` and made the daemon flip
+  depth interpretation. Flags now come from the shared `IpcFlag` enum.
+- **Dead code removed.** `modules/hook/depth_format.cpp`
+  (`ExportDepthForFrame`) had no callers and has been deleted.
 - **Daemon runtime path did not compile (Windows).** The five
   pipeline-unification commits left the new daemon sources unbuildable:
   - `dxgi_interceptor.cpp` re-defined globals that its own header already

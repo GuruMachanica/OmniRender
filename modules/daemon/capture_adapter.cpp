@@ -7,10 +7,16 @@
 #include <cmath>
 #include <dxgi.h>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include "../common/ipc_protocol.h"
 #include "../common/logging.h"
 #include "../../core/capability/GraphicsApi.h"
 #include "../../core/frame/FrameTiming.h"
+#include "../../core/resources/TextureDesc.h"
 #include "../../graphics/abstraction/IGraphicsDevice.h"
 #include "../../graphics/abstraction/IGraphicsTexture.h"
 
@@ -56,6 +62,72 @@ CaptureAdapter::GetOrOpen(uint64_t handle, CachedTexture& cache) {
 void CaptureAdapter::InvalidateCache() noexcept {
     color_cache_ = {};
     depth_cache_ = {};
+    UnmapPixelBlock();
+    pixel_upload_tex_.reset();
+    pixel_tex_width_ = pixel_tex_height_ = 0;
+}
+
+// ---------------------------------------------------------------------------
+// CPU pixel fallback channel (OpenGL capture without WGL_NV_DX_interop2)
+// ---------------------------------------------------------------------------
+const uint8_t* CaptureAdapter::MapPixelBlock(const OmniRenderIPCFrameData& p) {
+    if (p.struct_version < omnirender::kIpcVersion_V050) return nullptr;
+    if (p.pixel_block_name[0] == '\0' || p.pixel_data_size == 0) return nullptr;
+
+    // The block name is stable per process; remap only if not open yet.
+    if (pixel_mapping_ && pixel_view_) {
+        return pixel_view_;
+    }
+
+    pixel_mapping_ = ::OpenFileMappingA(FILE_MAP_READ, FALSE, p.pixel_block_name);
+    if (!pixel_mapping_) {
+        OMNI_LOG_WARN("CaptureAdapter: OpenFileMappingA(%s) failed: %lu",
+                      p.pixel_block_name, ::GetLastError());
+        return nullptr;
+    }
+    pixel_view_ = static_cast<uint8_t*>(::MapViewOfFile(
+        pixel_mapping_, FILE_MAP_READ, 0, 0, p.pixel_data_size));
+    if (!pixel_view_) {
+        OMNI_LOG_WARN("CaptureAdapter: MapViewOfFile(pixel block) failed: %lu", ::GetLastError());
+        ::CloseHandle(pixel_mapping_);
+        pixel_mapping_ = nullptr;
+        return nullptr;
+    }
+    OMNI_LOG_INFO("CaptureAdapter: GL pixel block mapped (%s, %u bytes)",
+                  p.pixel_block_name, p.pixel_data_size);
+    return pixel_view_;
+}
+
+void CaptureAdapter::UnmapPixelBlock() noexcept {
+    if (pixel_view_) {
+        ::UnmapViewOfFile(pixel_view_);
+        pixel_view_ = nullptr;
+    }
+    if (pixel_mapping_) {
+        ::CloseHandle(pixel_mapping_);
+        pixel_mapping_ = nullptr;
+    }
+}
+
+// Upload CPU pixels into an owned BGRA8 texture (recreated on resize).
+static std::shared_ptr<graphics::IGraphicsTexture>
+EnsurePixelUploadTexture(graphics::IGraphicsDevice& device,
+                         std::shared_ptr<graphics::IGraphicsTexture>& tex,
+                         uint32_t& tex_w, uint32_t& tex_h,
+                         uint32_t width, uint32_t height) {
+    if (!tex || tex_w != width || tex_h != height) {
+        // The GL CPU pixel block holds RGBA byte order (glReadPixels GL_RGBA),
+        // so the upload texture must be R8G8B8A8 — a BGRA8 view would swap
+        // red and blue. The GL hook publishes color_format=28 accordingly.
+        TextureDesc desc{ width, height, 1, TextureFormat::R8G8B8A8_UNORM,
+            TextureUsage::ShaderResource | TextureUsage::RenderTarget |
+            TextureUsage::TransferDst | TextureUsage::TransferSrc,
+            "GLCpuPixelColor" };
+        tex = device.CreateTexture(desc);
+        tex_w = tex ? width : 0;
+        tex_h = tex ? height : 0;
+    }
+    return tex;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +165,38 @@ FrameContext CaptureAdapter::Adapt(const OmniRenderIPCFrameData& p) {
     fc.output_resolution = { p.target_width  ? p.target_width  : p.surface_width,
                               p.target_height ? p.target_height : p.surface_height };
 
-    // --- Color texture (cached import, #14) --------------------------------
-    auto color_tex = GetOrOpen(p.shared_color_handle, color_cache_);
+    // --- Color texture ------------------------------------------------------
+    // Two sources: a GPU shared handle (D3D9/DXGI/GL-interop) or a CPU pixel
+    // block (OpenGL fallback without interop). PixelDataCpu wins when set.
+    // Pixel fields only exist in IPC v2+; older payloads must not be trusted.
+    const bool pixel_cpu = (p.struct_version >= omnirender::kIpcVersion_V050) &&
+                           (p.flags & static_cast<uint32_t>(IpcFlag::PixelDataCpu)) != 0;
+    std::shared_ptr<graphics::IGraphicsTexture> color_tex;
+    if (pixel_cpu && fc.input_resolution.width > 0 && fc.input_resolution.height > 0) {
+        if (const uint8_t* pixels = MapPixelBlock(p)) {
+            color_tex = EnsurePixelUploadTexture(device_, pixel_upload_tex_,
+                                                 pixel_tex_width_, pixel_tex_height_,
+                                                 fc.input_resolution.width,
+                                                 fc.input_resolution.height);
+            if (color_tex) {
+                auto ctx = device_.GetImmediateContext();
+                if (ctx) {
+                    ctx->UploadTextureData(color_tex.get(), pixels,
+                                           p.pixel_row_pitch);
+                } else {
+                    color_tex = nullptr;
+                }
+            }
+        }
+        if (color_tex) {
+            fc.color = core::GpuTexture(color_tex);
+            fc.validity.color_valid = true;
+        } else {
+            OMNI_LOG_WARN("CaptureAdapter: CPU pixel upload failed (frame %llu)", p.frame_index);
+        }
+    } else {
+        color_tex = GetOrOpen(p.shared_color_handle, color_cache_);
+    }
     if (color_tex) {
         // Dimension validation (#8): warn if texture disagrees with IPC metadata.
         const uint32_t tw = color_tex->GetWidth();
@@ -106,6 +208,8 @@ FrameContext CaptureAdapter::Adapt(const OmniRenderIPCFrameData& p) {
             // don't process wrong-sized data.
             color_tex = nullptr;
             color_cache_ = {};  // force re-open next frame
+            pixel_upload_tex_.reset();
+            pixel_tex_width_ = pixel_tex_height_ = 0;
         }
     }
     if (color_tex) {

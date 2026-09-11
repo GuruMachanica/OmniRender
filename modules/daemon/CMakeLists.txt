@@ -86,6 +86,15 @@ if(OMNIRENDER_BUILD_CSO)
             "${CMAKE_SOURCE_DIR}/modules/shaders/fsr_easu.hlsl"
             "${CMAKE_SOURCE_DIR}/modules/shaders/fsr_rcas.hlsl"
             "${CMAKE_SOURCE_DIR}/modules/shaders/raytrace_screen_space.hlsl")
+        # Canonical core temporal shaders (shaders/temporal/). Their cbuffer
+        # layout matches core::temporal::ReprojectionCB and they are consumed
+        # by core::temporal::{MotionReprojection,Disocclusion,ReactiveMask}Pass
+        # and core::temporal::DepthProvider via GetShaderPath().
+        set(CORE_TEMPORAL_SHADER_HLSL
+            "${CMAKE_SOURCE_DIR}/shaders/temporal/MotionReproject.hlsl"
+            "${CMAKE_SOURCE_DIR}/shaders/temporal/Disocclusion.hlsl"
+            "${CMAKE_SOURCE_DIR}/shaders/temporal/ReactiveMask.hlsl"
+            "${CMAKE_SOURCE_DIR}/shaders/temporal/DepthLinearize.hlsl")
         set(DAEMON_SHADER_CSOS "")
         foreach(SRC ${DAEMON_SHADER_HLSL})
             get_filename_component(BASENAME ${SRC} NAME_WE)
@@ -123,6 +132,24 @@ if(OMNIRENDER_BUILD_CSO)
                     -Fo "${CSO}"
                 DEPENDS ${SRC}
                 COMMENT "Compiling ${BASENAME}.hlsl (${PROFILE}::${ENTRY}) -> ${BASENAME}.cso"
+                VERBATIM)
+            list(APPEND DAEMON_SHADER_CSOS ${CSO})
+        endforeach()
+        # Core temporal CSOs keep their canonical names (MotionReproject.cso,
+        # Disocclusion.cso, ReactiveMask.cso, DepthLinearize.cso).
+        foreach(SRC ${CORE_TEMPORAL_SHADER_HLSL})
+            get_filename_component(BASENAME ${SRC} NAME_WE)
+            set(CSO "${CMAKE_CURRENT_BINARY_DIR}/shaders/${BASENAME}.cso")
+            add_custom_command(
+                OUTPUT "${CSO}"
+                COMMAND ${DXC_EXECUTABLE}
+                    -T cs_5_0
+                    -E CSMain
+                    -O3 -Qstrip_debug
+                    ${SRC}
+                    -Fo "${CSO}"
+                DEPENDS ${SRC}
+                COMMENT "Compiling temporal/${BASENAME}.hlsl (cs_5_0::CSMain) -> ${BASENAME}.cso"
                 VERBATIM)
             list(APPEND DAEMON_SHADER_CSOS ${CSO})
         endforeach()

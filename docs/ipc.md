@@ -37,24 +37,35 @@ Defined in
 Byte-for-byte identical to PRD §5.1.
 
 ```cpp
-#pragma pack(push, 1)
+// Defined in modules/common/ipc_protocol.h (pack(8)). struct_version:
+//   0 = v0.3.0 layout, 1 = v0.4.0 (VP/jitter/motion), 2 = v0.5.0 (pixel block)
 struct OmniRenderIPCFrameData {
-    uint32_t magic_header;        // 0x4F4D4E49 ("OMNI")
-    uint64_t frame_index;         // Monotonically increasing counter
+    uint32_t magic_header;         // 0x4F4D4E49 ("OMNI")
+    uint32_t struct_version;
+    uint64_t frame_index;          // Monotonically increasing counter
     uint32_t surface_width;
     uint32_t surface_height;
     uint32_t target_width;
     uint32_t target_height;
-    uint32_t color_format;        // DXGI_FORMAT
-    uint32_t depth_format;        // DXGI_FORMAT
-    HANDLE   shared_color_handle; // Win32 shared NT handle
-    HANDLE   shared_depth_handle; // Win32 shared NT handle
+    uint32_t color_format;         // DXGI_FORMAT value
+    uint32_t depth_format;         // DXGI_FORMAT value (0 = none)
+    uint64_t shared_color_handle;  // fixed-width cross-process handle
+    uint64_t shared_depth_handle;
+    uint64_t shared_motion_handle;
     float    camera_near;
     float    camera_far;
     float    fov_vertical_rad;
-    uint32_t flags;               // see IpcFlag
+    float    jitter_x;             // Halton(2) sub-pixel offset (v0.4.0)
+    float    jitter_y;             // Halton(3) sub-pixel offset (v0.4.0)
+    float    view_proj_current[16];  // view*proj of this frame (v0.4.0)
+    float    view_proj_previous[16]; // view*proj of last frame (v0.4.0)
+    uint32_t motion_format;          // DXGI_FORMAT_R16G16_FLOAT (v0.4.0)
+    uint32_t flags;                  // see IpcFlag
+    // v0.5.0: CPU pixel fallback channel (OpenGL without WGL_NV_DX_interop2)
+    char     pixel_block_name[48];   // named file mapping, empty = none
+    uint32_t pixel_data_size;        // total bytes in the mapping
+    uint32_t pixel_row_pitch;        // bytes per row (width*4 for RGBA8)
 };
-#pragma pack(pop)
 ```
 
 ## 4. DXGI shared NT handles
@@ -71,12 +82,38 @@ copy**.
 > `pSharedHandle` parameter, then exports that handle. See
 > [`modules/hook/d3d9_interceptor.cpp`](../modules/hook/d3d9_interceptor.cpp).
 
+### CPU pixel fallback channel (OpenGL, IPC v2+)
+
+When a game uses OpenGL and the driver does not expose
+`WGL_NV_DX_interop2`, there is no GPU shared handle. The GL hook then
+publishes color through a plain shared file mapping:
+
+```text
+wglSwapBuffers (no interop)
+  glReadPixels (RGBA8, bottom-up)
+  flip rows top-down
+  copy into Local\OmniRender_GL_Pixels_<pid>
+  publish payload: pixel_block_name / pixel_data_size / pixel_row_pitch
+                   flags |= IpcFlag::PixelDataCpu, color_format = 28 (R8G8B8A8)
+
+daemon (CaptureAdapter)
+  OpenFileMappingA(FILE_MAP_READ)
+  UploadTextureData into an owned R8G8B8A8 texture
+  FrameContext.color = that texture
+```
+
+This path costs one CPU round-trip per frame and is bounded to a single
+input-resolution image; it exists so OpenGL games on hardware without
+interop still get the full daemon pipeline instead of dropping frames.
+
 ## 5. Flag bits
 
 | Bit | Name | Meaning |
 |-----|------|---------|
 | 0   | `ReversedZ` | Hardware depth is reversed-Z (D3D/GL); daemon must invert before linearization. |
-| 1   | `DepthRaw`  | Depth value is already inverted and must be passed through untouched. |
+| 1   | `DepthRaw`  | Depth was not acquired / is unpopulated; `shared_depth_handle` is not valid. |
+| 2   | `CameraZero` | `view_proj_current`/`view_proj_previous` are all-zero (camera not extracted). |
+| 11  | `PixelDataCpu` | Color arrives as CPU pixels in `pixel_block_name` (no GPU shared handle). IPC v2+ only. |
 
 ## 6. Lifecycle
 

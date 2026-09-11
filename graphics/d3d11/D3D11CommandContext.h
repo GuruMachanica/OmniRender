@@ -23,6 +23,7 @@ public:
     void CopyTexture(IGraphicsTexture* dst, IGraphicsTexture* src) override;
     void UpdateBuffer(IGraphicsBuffer* buffer, const void* data, size_t size) override;
     void UploadTextureData(IGraphicsTexture* dst, const void* data, uint32_t row_pitch) override;
+    bool ReadbackTexture(IGraphicsTexture* src, void* out_data, size_t out_size) override;
     void Dispatch(uint32_t group_x, uint32_t group_y, uint32_t group_z) override;
 
     [[nodiscard]] void* GetNativeContext() const noexcept override { return context_.Get(); }

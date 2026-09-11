@@ -4,6 +4,7 @@
 #include <memory>
 #include "../core/graph/RenderGraph.h"
 #include "../core/temporal/HistoryManager.h"
+#include "../core/temporal/DepthProvider.h"
 #include "../core/temporal/MotionReprojectionPass.h"
 #include "../core/temporal/DisocclusionPass.h"
 #include "../core/temporal/ReactiveMaskPass.h"
@@ -18,6 +19,7 @@ class ICommandContext;
 namespace omnirender::runtime {
 
 struct PipelineConfig {
+    bool enable_depth_linearize = true;
     bool enable_motion_vectors = true;
     bool enable_reactive_mask  = true;
     bool enable_disocclusion   = true;
@@ -51,6 +53,7 @@ private:
 
     core::RenderGraph                                  graph_;
     core::HistoryManager                               history_mgr_;
+    core::temporal::DepthProvider                      depth_provider_;
     core::temporal::MotionReprojectionPass             motion_pass_;
     core::temporal::DisocclusionPass                   disocclusion_pass_;
     core::temporal::ReactiveMaskPass                   reactive_pass_;

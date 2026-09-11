@@ -25,6 +25,11 @@ public:
     // Upload CPU-side pixel data directly into a GPU texture (row_pitch in bytes).
     // Maps to UpdateSubresource on D3D11; used by CPU-fallback temporal passes.
     virtual void UploadTextureData(IGraphicsTexture* dst, const void* data, uint32_t row_pitch) = 0;
+    // Read a GPU texture back into CPU memory. Returns false when readback is
+    // unavailable (unsupported format, mock context, etc.). Used by the
+    // DepthProvider CPU fallback; blocking sync is acceptable there because
+    // it only runs when no GPU shader is loaded.
+    virtual bool ReadbackTexture(IGraphicsTexture* src, void* out_data, size_t out_size) = 0;
     virtual void Dispatch(uint32_t group_x, uint32_t group_y, uint32_t group_z) = 0;
 
     [[nodiscard]] virtual void* GetNativeContext() const noexcept = 0;

@@ -7,10 +7,15 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <cstring>
 #include <GL/gl.h>
+
+#include <string>
+#include <vector>
 
 #include "opengl_interop.h"
 #include "../common/logging.h"
+#include "../common/ipc_protocol.h"
 
 #define WGL_ACCESS_READ_ONLY_NV     0x00000000
 #define WGL_ACCESS_READ_WRITE_NV    0x00000001
@@ -47,6 +52,18 @@ int  g_width        = 0;
 int  g_height       = 0;
 bool g_initialized  = false;
 bool g_supported    = false;
+
+// ---------------------------------------------------------------------------
+// CPU pixel fallback channel (no WGL_NV_DX_interop2).
+// A named file mapping holds the current frame as top-down RGBA8 pixels that
+// the daemon maps and uploads into a D3D11 texture. Bounded to one frame; the
+// mapping is recreated when the game changes resolution.
+// ---------------------------------------------------------------------------
+HANDLE               g_pixel_mapping   = nullptr;
+uint8_t*             g_pixel_data      = nullptr;
+uint32_t             g_pixel_capacity  = 0;
+std::string          g_pixel_block_name;
+std::vector<uint8_t> g_staging_pixels;
 
 bool ResolveWGLExtensions() {
     g_wglDXOpenDeviceNV = reinterpret_cast<PFNWGLDXOPENDEVICENVPROC>(
@@ -163,6 +180,7 @@ bool InitializeGLInterop(HDC, int width, int height) {
 }
 
 void ShutdownGLInterop() {
+    ShutdownGLPixelBlock();
     if (g_interop_device && g_interop_object && g_wglDXUnregisterObjectNV) {
         g_wglDXUnregisterObjectNV(g_interop_device, g_interop_object);
         g_interop_object = nullptr;
@@ -208,6 +226,81 @@ HANDLE CaptureGLFrameZeroCopy(HDC hdc, int width, int height) {
 
     g_wglDXUnlockObjectsNV(g_interop_device, 1, &g_interop_object);
     return g_shared_handle;
+}
+
+bool CaptureGLFrameCpu(HDC hdc, int width, int height,
+                       const char** out_block_name,
+                       uint32_t* out_data_size,
+                       uint32_t* out_row_pitch) {
+    if (width <= 0 || height <= 0 || !out_block_name || !out_data_size || !out_row_pitch) {
+        return false;
+    }
+
+    const uint32_t w = static_cast<uint32_t>(width);
+    const uint32_t h = static_cast<uint32_t>(height);
+    const uint32_t pitch = w * 4u;                       // RGBA8
+    const uint32_t total = pitch * h;
+
+    // (Re)create the shared mapping when the resolution changed.
+    if (g_pixel_mapping && (g_width != width || g_height != height)) {
+        ShutdownGLPixelBlock();
+    }
+    if (!g_pixel_mapping) {
+        g_pixel_block_name = std::string("Local\\OmniRender_GL_Pixels_")
+                             + std::to_string(::GetCurrentProcessId());
+        g_pixel_mapping = ::CreateFileMappingA(
+            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, total,
+            g_pixel_block_name.c_str());
+        if (!g_pixel_mapping) {
+            OMNI_LOG_ERROR("GL CPU fallback: CreateFileMappingA failed: %lu", ::GetLastError());
+            g_pixel_block_name.clear();
+            return false;
+        }
+        g_pixel_data = static_cast<uint8_t*>(::MapViewOfFile(
+            g_pixel_mapping, FILE_MAP_ALL_ACCESS, 0, 0, total));
+        if (!g_pixel_data) {
+            OMNI_LOG_ERROR("GL CPU fallback: MapViewOfFile failed: %lu", ::GetLastError());
+            ::CloseHandle(g_pixel_mapping);
+            g_pixel_mapping = nullptr;
+            g_pixel_block_name.clear();
+            return false;
+        }
+        g_pixel_capacity = total;
+        OMNI_LOG_INFO("GL CPU fallback: shared pixel block ready (%s, %ux%u)",
+                      g_pixel_block_name.c_str(), w, h);
+    }
+
+    // Read the GL backbuffer (bottom-up) into persistent staging.
+    const size_t need = static_cast<size_t>(total);
+    if (g_staging_pixels.size() < need) g_staging_pixels.resize(need);
+    ::glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, g_staging_pixels.data());
+
+    // GL returns rows bottom-up; IPC consumers expect top-down frames.
+    for (uint32_t y = 0; y < h; ++y) {
+        std::memcpy(g_pixel_data + static_cast<size_t>(y) * pitch,
+                    g_staging_pixels.data() + static_cast<size_t>(h - 1 - y) * pitch,
+                    pitch);
+    }
+
+    *out_block_name = g_pixel_block_name.c_str();
+    *out_data_size  = total;
+    *out_row_pitch  = pitch;
+    return true;
+}
+
+void ShutdownGLPixelBlock() {
+    if (g_pixel_data) {
+        ::UnmapViewOfFile(g_pixel_data);
+        g_pixel_data = nullptr;
+    }
+    if (g_pixel_mapping) {
+        ::CloseHandle(g_pixel_mapping);
+        g_pixel_mapping = nullptr;
+    }
+    g_pixel_capacity = 0;
+    g_pixel_block_name.clear();
+    g_staging_pixels.clear();
+    g_staging_pixels.shrink_to_fit();
 }
 
 bool IsGLInteropActive() {

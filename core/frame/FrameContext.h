@@ -15,6 +15,7 @@ namespace omnirender::core {
 struct FrameContext {
     GpuTexture     color;
     GpuTexture     depth;
+    GpuTexture     depth_linear;   // DepthProvider output: raw depth linearized to [0,1]
     GpuTexture     motion;
     GpuTexture     reactive;
     GpuTexture     disocclusion;

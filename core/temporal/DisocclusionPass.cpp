@@ -79,12 +79,13 @@ void DisocclusionPass::Shutdown() {
 
 PassResult DisocclusionPass::Execute(FrameContext& fc,
                                      graphics::ICommandContext& cmd,
-                                     const GpuTexture& prev_depth) {
+                                     const GpuTexture& prev_depth,
+                                     const GpuTexture& curr_depth) {
     if (!device_ || !output_disocc_.IsValid()) return PassResult::Failed;
-    if (!fc.depth.IsValid() || !prev_depth.IsValid()) return PassResult::Skipped;
+    if (!curr_depth.IsValid() || !prev_depth.IsValid()) return PassResult::Skipped;
 
-    PassResult res = gpu_shader_ ? ExecuteGpu(fc, cmd, prev_depth)
-                                 : ExecuteCpu(fc, cmd, prev_depth);
+    PassResult res = gpu_shader_ ? ExecuteGpu(fc, cmd, prev_depth, curr_depth)
+                                 : ExecuteCpu(fc, cmd, prev_depth, curr_depth);
     if (res == PassResult::Success) {
         fc.disocclusion = output_disocc_;
         fc.validity.disocc_valid = true;
@@ -94,7 +95,8 @@ PassResult DisocclusionPass::Execute(FrameContext& fc,
 
 PassResult DisocclusionPass::ExecuteGpu(FrameContext& fc,
                                         graphics::ICommandContext& cmd,
-                                        const GpuTexture& prev_depth) {
+                                        const GpuTexture& prev_depth,
+                                        const GpuTexture& curr_depth) {
     if (!cb_buffer_) return PassResult::Failed;
     auto cb = MakeReprojectionCB(fc);
     cmd.UpdateBuffer(cb_buffer_.get(), &cb, sizeof(cb));
@@ -103,7 +105,7 @@ PassResult DisocclusionPass::ExecuteGpu(FrameContext& fc,
     cmd.SetConstantBuffers(0, 1, cbs);
 
     // SRV0 = current depth, SRV1 = previous depth.
-    graphics::IGraphicsTexture* srvs[] = { fc.depth.Get(), prev_depth.Get() };
+    graphics::IGraphicsTexture* srvs[] = { curr_depth.Get(), prev_depth.Get() };
     cmd.SetShaderResources(0, 2, srvs);
 
     graphics::IGraphicsTexture* uavs[] = { output_disocc_.Get() };
@@ -122,6 +124,7 @@ PassResult DisocclusionPass::ExecuteGpu(FrameContext& fc,
 // Without GPU readback, we use camera movement magnitude to produce a uniform mask.
 PassResult DisocclusionPass::ExecuteCpu(FrameContext& fc,
                                         graphics::ICommandContext& cmd,
+                                        const GpuTexture&,
                                         const GpuTexture&) {
     // Estimate global disocclusion probability from camera delta (conservative heuristic).
     bool any_movement = fc.camera.HasMovement();

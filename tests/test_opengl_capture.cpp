@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <GL/gl.h>
 #include <cassert>
+#include <cstring>
 #include <iostream>
 
 #include "../common/ipc_protocol.h"
@@ -60,11 +61,20 @@ int main() {
 
     // 4. Test frame capture
     HANDLE shared_handle = omnirender::hook::CaptureGLFrameZeroCopy(hdc, 640, 480);
-    if (interop_init) {
-        assert(shared_handle != nullptr);
-        std::cout << "[Test: OpenGL Capture] Captured shared DXGI handle: " << shared_handle << std::endl;
+    const char*    cpu_block = nullptr;
+    uint32_t       cpu_size = 0, cpu_pitch = 0;
+    bool           cpu_ok = false;
+    if (!shared_handle) {
+        // Fallback path must produce a real cross-process pixel block.
+        cpu_ok = omnirender::hook::CaptureGLFrameCpu(hdc, 640, 480,
+                                                     &cpu_block, &cpu_size, &cpu_pitch);
+        assert(cpu_ok && cpu_block != nullptr);
+        assert(cpu_size == 640u * 480u * 4u);
+        assert(cpu_pitch == 640u * 4u);
+        std::cout << "[Test: OpenGL Capture] CPU fallback pixel block ready: "
+                  << cpu_block << " (" << cpu_size << " bytes)" << std::endl;
     } else {
-        std::cout << "[Test: OpenGL Capture] Captured via staging fallback as expected on non-NV hardware" << std::endl;
+        std::cout << "[Test: OpenGL Capture] Captured shared DXGI handle: " << shared_handle << std::endl;
     }
 
     // 5. Test Ring Buffer SPSC Slot allocation and payload publishing
@@ -86,10 +96,23 @@ int main() {
 
     omnirender::SetState(ring->slots[0], omnirender::SlotState::Captured);
     ring->slots[0].payload.magic_header         = omnirender::kIpcMagic;
+    ring->slots[0].payload.struct_version      = omnirender::kIpcVersion_V050;
     ring->slots[0].payload.surface_width        = 640;
     ring->slots[0].payload.surface_height       = 480;
     ring->slots[0].payload.shared_color_handle  = reinterpret_cast<uint64_t>(shared_handle);
-    ring->slots[0].payload.flags                = (shared_handle != nullptr) ? 0x01 : 0x00;
+    if (shared_handle) {
+        ring->slots[0].payload.flags = 0;  // zero-copy GPU handle needs no extra flag
+    } else if (cpu_ok) {
+        ::strncpy_s(ring->slots[0].payload.pixel_block_name, cpu_block,
+                    sizeof(ring->slots[0].payload.pixel_block_name) - 1);
+        ring->slots[0].payload.pixel_data_size = cpu_size;
+        ring->slots[0].payload.pixel_row_pitch = cpu_pitch;
+        ring->slots[0].payload.flags =
+            static_cast<uint32_t>(omnirender::IpcFlag::PixelDataCpu);
+    } else {
+        ring->slots[0].payload.flags =
+            static_cast<uint32_t>(omnirender::IpcFlag::DepthRaw);
+    }
     omnirender::SetState(ring->slots[0], omnirender::SlotState::Ready);
 
     assert(omnirender::GetState(ring->slots[0]) == omnirender::SlotState::Ready);

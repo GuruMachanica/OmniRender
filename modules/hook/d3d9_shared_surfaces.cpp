@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "../common/halton.h"
+#include "../common/ipc_protocol.h"
 #include "../common/logging.h"
 #include "../common/ring_buffer.h"
 
@@ -19,6 +20,12 @@ IDirect3DSurface9* g_shared_color        = nullptr;
 HANDLE             g_shared_color_handle = nullptr;
 IDirect3DSurface9* g_shared_depth        = nullptr;
 HANDLE             g_shared_depth_handle = nullptr;
+// True when g_shared_depth is a GPU-copyable depth surface (R32F render
+// target). When false the depth copy is skipped entirely and DepthRaw is
+// flagged: StretchRect from a D24S8 depth-stencil into an R32F render
+// target is unsupported on D3D9 and previously produced a garbage frame
+// the daemon treated as real depth.
+bool               g_shared_depth_copyable = false;
 
 omnirender::RingControlBlock* g_ring     = nullptr;
 
@@ -60,15 +67,37 @@ void EnsureSharedSurfaces(IDirect3DDevice9* device) {
         return;
     }
 
+    // Depth staging surface. The game's depth-stencil (typically D24S8 or
+    // D16) cannot be StretchRect'd into a plain R32F render target, so a
+    // copy attempt would either fail or silently produce garbage. Instead:
+    //  - try a shareable R32F surface (works when the driver supports it),
+    //  - and only publish depth when the actual copy succeeds this frame.
+    // When no copy happens the payload carries DepthRaw and a zero handle,
+    // so the daemon never consumes fabricated depth.
+    g_shared_depth_copyable = false;
     hr = device->CreateRenderTarget(
         width, height, D3DFMT_R32F, D3DMULTISAMPLE_NONE, 0, FALSE,
         &g_shared_depth, &g_shared_depth_handle);
-    if (FAILED(hr)) {
-        device->CreateRenderTarget(
-            width, height, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,
-            &g_shared_depth, nullptr);
+    if (SUCCEEDED(hr) && g_shared_depth) {
+        // Verify the driver really allows depth->R32F StretchRect before
+        // promising anything in the IPC payload.
+        IDirect3DSurface9* probe_src = nullptr;
+        if (SUCCEEDED(device->GetDepthStencilSurface(&probe_src)) && probe_src) {
+            D3DSURFACE_DESC ddesc{};
+            probe_src->GetDesc(&ddesc);
+            HRESULT copy_hr = device->StretchRect(probe_src, nullptr, g_shared_depth, nullptr, D3DTEXF_NONE);
+            g_shared_depth_copyable = SUCCEEDED(copy_hr);
+            if (!g_shared_depth_copyable) {
+                OMNI_LOG_INFO("D3D9 depth->R32F StretchRect unsupported (src fmt=0x%08X); depth capture disabled",
+                              static_cast<unsigned>(ddesc.Format));
+            }
+            probe_src->Release();
+        }
+    } else {
+        g_shared_depth = nullptr;
     }
-    OMNI_LOG_INFO("D3D9 shared surfaces ready: %ux%u (handle=%p)", width, height, g_shared_color_handle);
+    OMNI_LOG_INFO("D3D9 shared surfaces ready: %ux%u (handle=%p, depth_copyable=%d)",
+                  width, height, g_shared_color_handle, g_shared_depth_copyable ? 1 : 0);
 }
 
 void DestroySharedSurfaces() {
@@ -153,26 +182,37 @@ void CaptureD3D9Frame(IDirect3DDevice9* device) {
         return;
     }
 
-    IDirect3DSurface9* depth = nullptr;
-    if (SUCCEEDED(device->GetDepthStencilSurface(&depth)) && depth) {
-        device->StretchRect(depth, nullptr, g_shared_depth, nullptr, D3DTEXF_NONE);
-        depth->Release();
+    // Depth: only copy when the probe confirmed the driver supports it.
+    bool depth_ok = false;
+    if (g_shared_depth_copyable && g_shared_depth) {
+        IDirect3DSurface9* depth = nullptr;
+        if (SUCCEEDED(device->GetDepthStencilSurface(&depth)) && depth) {
+            depth_ok = SUCCEEDED(device->StretchRect(depth, nullptr, g_shared_depth, nullptr, D3DTEXF_NONE));
+            depth->Release();
+        }
     }
 
     D3DSURFACE_DESC desc{};
     g_shared_color->GetDesc(&desc);
     slot->payload.magic_header         = omnirender::kIpcMagic;
-    slot->payload.struct_version       = omnirender::kIpcVersion_V040;
+    slot->payload.struct_version       = omnirender::kIpcVersion_V050;
     slot->payload.frame_index          = p_seq + 1;
     slot->payload.surface_width        = desc.Width;
     slot->payload.surface_height       = desc.Height;
     slot->payload.target_width         = desc.Width;
     slot->payload.target_height        = desc.Height;
-    slot->payload.color_format         = 0x00000015;  // DXGI_FORMAT_B8G8R8A8_UNORM
-    slot->payload.depth_format         = 0x00000029;  // DXGI_FORMAT_R32_FLOAT
-    slot->payload.motion_format        = 0x00000022;  // DXGI_FORMAT_R16G16_FLOAT
+    // DXGI_FORMAT values by name, not magic numbers. 0x15 is
+    // DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS, NOT BGRA8 — the old hex literals
+    // published formats the daemon could not interpret correctly.
+    constexpr uint32_t kDxgiFormatB8G8R8A8_UNORM = 87;
+    constexpr uint32_t kDxgiFormatR32_FLOAT      = 41;
+    constexpr uint32_t kDxgiFormatR16G16_FLOAT   = 34;
+    slot->payload.color_format         = kDxgiFormatB8G8R8A8_UNORM;
+    slot->payload.depth_format         = depth_ok ? kDxgiFormatR32_FLOAT : 0;
+    slot->payload.motion_format        = kDxgiFormatR16G16_FLOAT;
     slot->payload.shared_color_handle  = reinterpret_cast<uint64_t>(g_shared_color_handle);
-    slot->payload.shared_depth_handle  = reinterpret_cast<uint64_t>(g_shared_depth_handle);
+    slot->payload.shared_depth_handle  = depth_ok
+        ? reinterpret_cast<uint64_t>(g_shared_depth_handle) : 0;
     slot->payload.shared_motion_handle = 0;           // motion produced by daemon
     slot->payload.camera_near          = 0.1f;
     slot->payload.camera_far           = 1000.0f;
@@ -181,7 +221,13 @@ void CaptureD3D9Frame(IDirect3DDevice9* device) {
     omnirender::Halton23 jitter = omnirender::Halton23At(slot->payload.frame_index);
     slot->payload.jitter_x             = jitter.x;
     slot->payload.jitter_y             = jitter.y;
-    slot->payload.flags                = 0;
+    // Without a real depth copy the daemon must not pretend depth exists.
+    slot->payload.flags                = depth_ok
+        ? 0 : static_cast<uint32_t>(omnirender::IpcFlag::DepthRaw);
+    // No CPU pixel channel on the D3D9 path (GPU shared handle only).
+    slot->payload.pixel_block_name[0]  = '\0';
+    slot->payload.pixel_data_size      = 0;
+    slot->payload.pixel_row_pitch      = 0;
 
     static float s_prev_vp[16] = {};
     D3DMATRIX view{}, proj{}, vp{};

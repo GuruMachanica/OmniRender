@@ -1,7 +1,7 @@
 // filepath: modules/hook/depth_locator.h
 // Active depth/stencil surface identification helpers.
 //
-// The implementation lives in depth_locator.cpp. depth_format.cpp
+// The implementation lives in depth_locator.cpp.
 // includes this header (NOT the .cpp) to avoid duplicate-symbol
 // link errors when both translation units are compiled into the
 // same hook DLL.

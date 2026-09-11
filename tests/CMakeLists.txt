@@ -34,6 +34,21 @@ if(WIN32)
     )
     add_test(NAME core_d3d11_execution COMMAND test_core_d3d11_execution)
 
+    # Ship the core temporal CSOs next to the D3D11 execution test so the
+    # runtime pipeline's temporal passes exercise the GPU path when DXC is
+    # available. No-op when the shader compile target does not exist.
+    if(TARGET omnirender_daemon_shaders)
+        add_dependencies(test_core_d3d11_execution omnirender_daemon_shaders)
+        add_custom_command(TARGET test_core_d3d11_execution POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE_DIR:OmniRenderDaemon>/MotionReproject.cso
+                $<TARGET_FILE_DIR:OmniRenderDaemon>/Disocclusion.cso
+                $<TARGET_FILE_DIR:OmniRenderDaemon>/ReactiveMask.cso
+                $<TARGET_FILE_DIR:OmniRenderDaemon>/DepthLinearize.cso
+                $<TARGET_FILE_DIR:test_core_d3d11_execution>
+            COMMENT "Copying core temporal CSOs next to test_core_d3d11_execution")
+    endif()
+
     add_executable(test_ring_buffer test_ring_buffer.cpp)
     target_link_libraries(test_ring_buffer PRIVATE omnirender::common)
 

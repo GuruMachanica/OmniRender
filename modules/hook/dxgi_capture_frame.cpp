@@ -72,15 +72,19 @@ void CaptureFrameDXGI(IDXGISwapChain* swap) {
     slot->payload.target_width        = W;
     slot->payload.target_height       = H;
     slot->payload.color_format        = static_cast<uint32_t>(desc.BufferDesc.Format);
-    slot->payload.depth_format        = 0x00000029;  // DXGI_FORMAT_R32_FLOAT
+    slot->payload.depth_format        = 41;  // DXGI_FORMAT_R32_FLOAT (0x29 is TYPELESS_PAIRING, not R32F)
     slot->payload.shared_color_handle = reinterpret_cast<uint64_t>(g_shared_color_handle);
     slot->payload.shared_depth_handle = reinterpret_cast<uint64_t>(g_shared_depth_handle);
     slot->payload.fov_vertical_rad    = 1.0471975512f;  // 60 deg default
     omnirender::Halton23 jitter       = omnirender::Halton23At(slot->payload.frame_index);
     slot->payload.jitter_x            = jitter.x;
     slot->payload.jitter_y            = jitter.y;
-    slot->payload.motion_format       = 0x00000022;  // DXGI_FORMAT_R16G16_FLOAT
-    slot->payload.struct_version      = omnirender::kIpcVersion_V040;
+    slot->payload.motion_format       = 34;  // DXGI_FORMAT_R16G16_FLOAT (0x22 is not RG16F)
+    slot->payload.struct_version      = omnirender::kIpcVersion_V050;
+    // No CPU pixel channel on the DXGI path (GPU shared handle only).
+    slot->payload.pixel_block_name[0] = '\0';
+    slot->payload.pixel_data_size     = 0;
+    slot->payload.pixel_row_pitch     = 0;
 
     // Clear matrices before filling so partial writes leave known zeros.
     for (int i = 0; i < 16; ++i) {

@@ -29,10 +29,13 @@ public:
                     uint32_t width, uint32_t height);
     void Shutdown();
 
-    // Requires fc.depth and previous depth history.
+    // Requires current depth and previous depth history. `curr_depth` is
+    // normally the DepthProvider's linearized output; passing raw depth is
+    // allowed but the caller must then supply a matching-resolution history.
     // Returns Skipped if prerequisite resources are unavailable.
     PassResult Execute(FrameContext& fc, graphics::ICommandContext& cmd,
-                       const GpuTexture& prev_depth);
+                       const GpuTexture& prev_depth,
+                       const GpuTexture& curr_depth);
 
     [[nodiscard]] bool IsGpuPathActive() const noexcept { return gpu_shader_ != nullptr; }
 
@@ -41,9 +44,9 @@ public:
 
 private:
     PassResult ExecuteGpu(FrameContext& fc, graphics::ICommandContext& cmd,
-                          const GpuTexture& prev_depth);
+                          const GpuTexture& prev_depth, const GpuTexture& curr_depth);
     PassResult ExecuteCpu(FrameContext& fc, graphics::ICommandContext& cmd,
-                          const GpuTexture& prev_depth);
+                          const GpuTexture& prev_depth, const GpuTexture& curr_depth);
 
     GpuTexture                                  output_disocc_;
     std::shared_ptr<graphics::IGraphicsBuffer>  cb_buffer_;

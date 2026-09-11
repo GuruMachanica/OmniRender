@@ -1,5 +1,6 @@
 // filepath: graphics/d3d11/D3D11CommandContext.cpp
 #include "D3D11CommandContext.h"
+#include <cstring>
 #include "D3D11GraphicsTexture.h"
 #include "D3D11GraphicsBuffer.h"
 
@@ -75,6 +76,64 @@ void D3D11CommandContext::UploadTextureData(IGraphicsTexture* dst, const void* d
     if (tex_res) {
         context_->UpdateSubresource(tex_res, 0, nullptr, data, row_pitch, 0);
     }
+}
+
+bool D3D11CommandContext::ReadbackTexture(IGraphicsTexture* src, void* out_data, size_t out_size) {
+    if (!context_ || !src || !out_data || out_size == 0) return false;
+    auto* src_res = static_cast<ID3D11Resource*>(src->GetNativeResource());
+    if (!src_res) return false;
+
+    // Only single-sample 2D textures with a CPU-readable row layout are
+    // supported by this generic path (R32F / RGBA8 depth+color readbacks).
+    ID3D11Texture2D* src_tex = nullptr;
+    if (FAILED(src_res->QueryInterface(__uuidof(ID3D11Texture2D),
+                                       reinterpret_cast<void**>(&src_tex))) || !src_tex) {
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC td{};
+    src_tex->GetDesc(&td);
+    src_tex->Release();
+    if (td.SampleDesc.Count != 1) return false;
+
+    D3D11_TEXTURE2D_DESC sd = td;
+    sd.Usage     = D3D11_USAGE_STAGING;
+    sd.BindFlags = 0;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    sd.MiscFlags = 0;
+    sd.MipLevels = 1;
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+    ID3D11Device* dev = nullptr;
+    context_->GetDevice(&dev);
+    if (!dev) return false;
+    HRESULT hr = dev->CreateTexture2D(&sd, nullptr, &staging);
+    dev->Release();
+    if (FAILED(hr) || !staging) return false;
+
+    context_->CopyResource(staging.Get(), src_res);
+
+    D3D11_MAPPED_SUBRESOURCE ms{};
+    hr = context_->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &ms);
+    if (FAILED(hr)) return false;
+
+    // Copy row-by-row honouring the staging row pitch. All formats this
+    // path accepts today are 4 B/px (R32F for DepthProvider; RGBA8/BGRA8
+    // for potential future color readbacks).
+    const size_t bytes_per_px = 4u;
+    const size_t row_bytes = static_cast<size_t>(td.Width) * bytes_per_px;
+    if (row_bytes * td.Height > out_size) {
+        context_->Unmap(staging.Get(), 0);
+        return false;
+    }
+    const auto* src_row = static_cast<const uint8_t*>(ms.pData);
+    auto* dst_row = static_cast<uint8_t*>(out_data);
+    for (UINT y = 0; y < td.Height; ++y) {
+        std::memcpy(dst_row + y * row_bytes,
+                    src_row + static_cast<size_t>(y) * ms.RowPitch,
+                    row_bytes);
+    }
+    context_->Unmap(staging.Get(), 0);
+    return true;
 }
 
 void D3D11CommandContext::Dispatch(uint32_t group_x, uint32_t group_y, uint32_t group_z) {

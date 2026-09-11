@@ -28,8 +28,13 @@ inline constexpr const char* kFrameReadyEventNameLocal = "Local\\OmniRender_Fram
 //   - motion_format (DXGI_FORMAT of the motion vector texture)
 //   - struct_version (1 = v0.4.0, 0 = v0.3.0 layout for back-compat)
 //
+// v0.5.0-alpha (struct_version 2) adds the CPU pixel-fallback channel used by
+// the OpenGL capture path when WGL_NV_DX_interop2 is unavailable:
+//   - pixel_block_name / pixel_data_size / pixel_row_pitch describe a named
+//     shared file mapping holding raw top-down RGBA8 frame pixels.
+//
 // The daemon checks struct_version on every frame and gracefully falls
-// back to passthrough if a v0.3.0 hook payload arrives.
+// back to passthrough if an older hook payload arrives.
 #pragma pack(push, 8)
 struct OmniRenderIPCFrameData {
     uint32_t magic_header;         // 0x4F4D4E49 ("OMNI")
@@ -53,20 +58,27 @@ struct OmniRenderIPCFrameData {
     float    view_proj_previous[16];// NEW v0.4.0: view*proj of last frame
     uint32_t motion_format;         // NEW v0.4.0: DXGI_FORMAT_R16G16_FLOAT
     uint32_t flags;                 // Bit 0: Reversed Z, Bit 1: Depth Inverted
+    // NEW v0.5.0 (2): CPU pixel fallback channel (OpenGL without interop).
+    char     pixel_block_name[48];  // Named file mapping ("Local\\OmniRender_GL_Pixels_<pid>"), empty = none
+    uint32_t pixel_data_size;       // Total bytes in the mapping
+    uint32_t pixel_row_pitch;       // Bytes per row (width * 4 for RGBA8)
 };
 #pragma pack(pop)
 
 inline constexpr uint32_t kIpcMagic = 0x4F4D4E49; // "OMNI"
 
 // IPC struct version. 0 = v0.3.0-alpha (no motion, no VP, no jitter).
-// 1 = v0.4.0-alpha (full reprojection input). Bump on every layout change.
+// 1 = v0.4.0-alpha (full reprojection input). 2 = v0.5.0-alpha (pixel block).
+// Bump on every layout change.
 inline constexpr uint32_t kIpcVersion_V040 = 1;
+inline constexpr uint32_t kIpcVersion_V050 = 2;
 
 enum class IpcFlag : uint32_t {
-    None        = 0,
-    ReversedZ   = 1u << 0,  // depth buffer uses reversed-Z convention
-    DepthRaw    = 1u << 1,  // depth was not acquired / is unpopulated
-    CameraZero  = 1u << 2,  // view_proj_current/previous are all-zero (not extracted)
+    None         = 0,
+    ReversedZ    = 1u << 0,  // depth buffer uses reversed-Z convention
+    DepthRaw     = 1u << 1,  // depth was not acquired / is unpopulated
+    CameraZero   = 1u << 2,  // view_proj_current/previous are all-zero (not extracted)
+    PixelDataCpu = 1u << 11, // color is CPU pixels in pixel_block_name (no GPU handle)
 };
 
 // v0.3.0-alpha pipeline control bits travel in `flags` as well so the

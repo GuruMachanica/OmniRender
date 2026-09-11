@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include "../../core/frame/FrameContext.h"
 #include "../../core/frame/Resolution.h"
 #include "../../core/resources/TextureFormat.h"
@@ -34,10 +35,13 @@ class CaptureAdapter {
 public:
     explicit CaptureAdapter(graphics::IGraphicsDevice& device) noexcept
         : device_(device) {}
+    ~CaptureAdapter() { UnmapPixelBlock(); }
 
     // Translate one IPC payload into a core::FrameContext.
     // The resulting GpuTextures are reference-counted; texture objects are
     // reused across frames when the shared handle has not changed (#14).
+    // When the payload carries a CPU pixel block (OpenGL fallback path), the
+    // pixels are mapped and uploaded into an owned color texture instead.
     [[nodiscard]] core::FrameContext Adapt(
         const OmniRenderIPCFrameData& payload);
 
@@ -61,6 +65,18 @@ private:
     graphics::IGraphicsDevice& device_;
     CachedTexture color_cache_;
     CachedTexture depth_cache_;
+
+    // CPU pixel fallback channel (OpenGL without WGL_NV_DX_interop2).
+    void*    pixel_mapping_   = nullptr;  // HANDLE, void* to keep this header platform-neutral
+    uint8_t* pixel_view_      = nullptr;
+    uint64_t pixel_pid_generation_ = 0;   // last payload.frame_index the block was mapped for
+    std::shared_ptr<graphics::IGraphicsTexture> pixel_upload_tex_;
+    uint32_t pixel_tex_width_  = 0;
+    uint32_t pixel_tex_height_ = 0;
+
+    // Map the named pixel block for this frame, or reuse the existing view.
+    [[nodiscard]] const uint8_t* MapPixelBlock(const OmniRenderIPCFrameData& p);
+    void UnmapPixelBlock() noexcept;
 };
 
 }  // namespace omnirender::daemon

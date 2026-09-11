@@ -10,7 +10,6 @@ add_library(omnirender-hook SHARED
     dxgi_depth_capture.cpp
     dxgi_proxy.cpp
     depth_locator.cpp
-    depth_format.cpp
     ipc_client.cpp
     opengl_interceptor.cpp
     opengl_interop.cpp
@@ -36,20 +35,27 @@ set_target_properties(omnirender-hook PROPERTIES
     OUTPUT_NAME "omnirender-hook"
     PREFIX "")
 
-# When the install target is built, also emit a copy renamed to
-# opengl32.dll so users can drop it into an OpenGL game folder to
-# capture wglSwapBuffers. The d3d9.dll rename pattern is handled
-# the same way: install the DLL under each "proxy name" so the
-# installer can pick the right one.
 install(TARGETS omnirender-hook
     RUNTIME DESTINATION bin)
 
-# Build an opengl32.dll proxy by post-build renaming. Only emitted
-# on Windows because the OpenGL proxy is Windows-only.
+# Proxy DLL artifacts (audit plan Commit 10). The hook DLL already exports
+# the proxy entry points each loader path needs:
+#   - Direct3DCreate9            -> drop in as d3d9.dll
+#   - CreateDXGIFactory{,1,2}    -> drop in as dxgi.dll
+#   - wglSwapBuffers forwarding  -> drop in as opengl32.dll
+# Emit one renamed copy per proxy name next to the canonical DLL and install
+# all of them so the installer / user can pick the right drop-in. DLLMain
+# (main.cpp) detects which proxy role it was loaded as via module_name.cpp
+# and only installs the matching hook set.
 if(WIN32)
-    add_custom_command(TARGET omnirender-hook POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:omnirender-hook>
-            $<TARGET_FILE:omnirender-hook>.opengl32.dll
-        COMMENT "Building opengl32.dll proxy from omnirender-hook.dll")
+    foreach(proxy_name d3d9 dxgi opengl32)
+        add_custom_command(TARGET omnirender-hook POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:omnirender-hook>
+                $<TARGET_FILE_DIR:omnirender-hook>/${proxy_name}.dll
+            COMMENT "Emitting ${proxy_name}.dll proxy from omnirender-hook.dll")
+        install(FILES "$<TARGET_FILE_DIR:omnirender-hook>/${proxy_name}.dll"
+            DESTINATION bin/proxies
+            OPTIONAL)
+    endforeach()
 endif()

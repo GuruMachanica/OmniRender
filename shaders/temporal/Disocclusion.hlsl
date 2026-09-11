@@ -2,6 +2,9 @@
 // Depth-based disocclusion mask generation.
 // Pixels whose reprojected previous depth differs significantly from current depth
 // are marked as disoccluded (value = 1.0).
+// NOTE: t_CurrDepth / t_PrevDepth are expected to be LINEARIZED depth [0,1]
+// (core::temporal::DepthProvider output). The kDepthThreshold below is in
+// linear-depth units, so feeding raw NDC depth makes the threshold meaningless.
 // Compile: fxc /T cs_5_0 /E CSMain /Fo Disocclusion.cso Disocclusion.hlsl
 
 cbuffer ReprojectionCB : register(b0) {

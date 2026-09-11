@@ -50,6 +50,7 @@ bool Pipeline::Initialize(graphics::IGraphicsDevice& device,
 
     // Initialize temporal passes -- non-fatal if GPU resource allocation fails
     // (passes will return Skipped gracefully).
+    depth_provider_.Initialize(device, input_res.width, input_res.height);
     motion_pass_.Initialize(device, input_res.width, input_res.height);
     disocclusion_pass_.Initialize(device, input_res.width, input_res.height);
     reactive_pass_.Initialize(device, input_res.width, input_res.height);
@@ -106,6 +107,20 @@ bool Pipeline::OnDeviceRestored(graphics::IGraphicsDevice& device) {
 void Pipeline::BuildGraph() {
     graph_.Clear();
 
+    // --- Pass 0: depth linearization ---------------------------------------
+    // Raw game depth (non-linear NDC, possibly reversed-Z) is unusable for
+    // disocclusion detection and DLSS expects [0,1] view-linear depth. The
+    // DepthProvider writes fc.depth_linear and leaves fc.depth untouched so
+    // motion reprojection keeps consuming raw NDC depth for unprojection.
+    if (config_.enable_depth_linearize) {
+        graph_.AddPass(core::PassType::Capture, "DepthLinearize",
+                       core::FrameValidity{ false, true, false, false, false, false, false, false },
+                       core::ResourceAccess::ReadDepth, core::ResourceAccess::WriteDepth,
+                       [this](core::FrameContext& fc, graphics::ICommandContext& cmd) -> core::PassResult {
+            return depth_provider_.Process(fc, cmd);
+        }, core::PassPolicy::Optional);
+    }
+
     if (config_.enable_motion_vectors) {
         graph_.AddPass(core::PassType::MotionReproject, "MotionReproject",
                        core::FrameValidity{ false, true, false, false, false, false, false, false },
@@ -135,7 +150,12 @@ void Pipeline::BuildGraph() {
                        core::ResourceAccess::ReadDepth,
                        core::ResourceAccess::WriteDisocc,
                        [this](core::FrameContext& fc, graphics::ICommandContext& cmd) -> core::PassResult {
-            return disocclusion_pass_.Execute(fc, cmd, history_mgr_.GetPreviousDepthTexture());
+            // Downstream consumers get linearized depth when available (raw
+            // depth is unusable for disocclusion delta checks); fall back to
+            // raw depth when the DepthProvider skipped this frame.
+            core::GpuTexture depth_for_pass =
+                fc.depth_linear.IsValid() ? fc.depth_linear : fc.depth;
+            return disocclusion_pass_.Execute(fc, cmd, history_mgr_.GetPreviousDepthTexture(), depth_for_pass);
         }, core::PassPolicy::Optional);
     }
 
@@ -180,7 +200,13 @@ bool Pipeline::ExecuteFrame(core::FrameContext& frame_ctx, graphics::ICommandCon
 
     // Only commit history if frame execution succeeded (do not poison history on failure)
     if (result) {
-        history_mgr_.CommitFrame(cmd_ctx, frame_ctx.color, frame_ctx.depth);
+        // Commit LINEARIZED depth when available so the previous-depth history
+        // stays in the same domain the Disocclusion pass consumes. Mixing raw
+        // (this frame) with linear (history) would make the depth delta
+        // meaningless.
+        core::GpuTexture depth_for_history =
+            frame_ctx.depth_linear.IsValid() ? frame_ctx.depth_linear : frame_ctx.depth;
+        history_mgr_.CommitFrame(cmd_ctx, frame_ctx.color, depth_for_history);
     }
 
     bool end_ok = scope.Close();

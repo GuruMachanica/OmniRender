@@ -1,5 +1,9 @@
 // MotionReproject.hlsl
 // Depth-reprojected motion vector generation.
+// NOTE: t_Depth must be RAW NDC/hardware depth (not linearized): the shader
+// unprojects through g_InvViewProj, which expects the raw projection-space Z.
+// DepthProvider's linearized output (fc.depth_linear) is for disocclusion and
+// DLSS only.
 // Compile: fxc /T cs_5_0 /E CSMain /Fo MotionReproject.cso MotionReproject.hlsl
 
 cbuffer ReprojectionCB : register(b0) {

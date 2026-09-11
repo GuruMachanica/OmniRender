@@ -20,7 +20,6 @@ buffer.
 | [`opengl_interceptor.cpp`](./opengl_interceptor.cpp) | OpenGL / WGL `wglSwapBuffers` interceptor. Dispatches zero-copy GPU capture or `glReadPixels` fallback. |
 | [`opengl_interop.cpp`](./opengl_interop.cpp) / [`.h`](./opengl_interop.h) | Zero-copy OpenGL <-> Direct3D 11 GPU texture bridge using `WGL_NV_DX_interop2`. Eliminates host CPU readbacks. |
 | [`depth_locator.cpp`](./depth_locator.cpp) | Heuristic active-depth/stencil finder (matches backbuffer size, D24S8/D32 family, currently bound). |
-| [`depth_format.cpp`](./depth_format.cpp) | Improves depth capture fidelity by recording the real source depth format and linearization hints in IPC flags. |
 | [`ipc_client.cpp`](./ipc_client.cpp) | Ring-buffer producer. Single-producer / single-consumer (SPSC) with explicit slot state. |
 | [`module_name.cpp`](./module_name.cpp) | Process name and loaded module detection utilities. |
 
