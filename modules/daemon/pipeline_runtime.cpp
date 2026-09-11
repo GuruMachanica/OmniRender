@@ -37,6 +37,8 @@
 #include "../../graphics/d3d11/D3D11GraphicsDevice.h"
 #include "../../graphics/d3d11/D3D11CommandContext.h"
 
+namespace omnirender::daemon {
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -85,12 +87,6 @@ core::Resolution ResolveOutputResolution(const core::Resolution& input) {
     if (out.width == 0 || out.height == 0) out = input;
     return out;
 }
-
-}  // namespace
-
-namespace omnirender::daemon {
-
-namespace {
 
 std::unique_ptr<graphics::d3d11::D3D11GraphicsDevice> g_rt_device;
 std::unique_ptr<graphics::d3d11::D3D11CommandContext>  g_rt_context;
