@@ -32,10 +32,10 @@ if(TARGET omnirender_daemon_shaders)
     add_dependencies(gpu_test_host omnirender_daemon_shaders)
     add_custom_command(TARGET gpu_test_host POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE_DIR:OmniRenderDaemon>/MotionReproject.cso
-            $<TARGET_FILE_DIR:OmniRenderDaemon>/Disocclusion.cso
-            $<TARGET_FILE_DIR:OmniRenderDaemon>/ReactiveMask.cso
-            $<TARGET_FILE_DIR:OmniRenderDaemon>/DepthLinearize.cso
+            ${CMAKE_BINARY_DIR}/modules/daemon/shaders/MotionReproject.cso
+            ${CMAKE_BINARY_DIR}/modules/daemon/shaders/Disocclusion.cso
+            ${CMAKE_BINARY_DIR}/modules/daemon/shaders/ReactiveMask.cso
+            ${CMAKE_BINARY_DIR}/modules/daemon/shaders/DepthLinearize.cso
             $<TARGET_FILE_DIR:gpu_test_host>
         COMMENT "Copying core temporal CSOs next to gpu_test_host")
 endif()

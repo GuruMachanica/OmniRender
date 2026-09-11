@@ -41,10 +41,10 @@ if(WIN32)
         add_dependencies(test_core_d3d11_execution omnirender_daemon_shaders)
         add_custom_command(TARGET test_core_d3d11_execution POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE_DIR:OmniRenderDaemon>/MotionReproject.cso
-                $<TARGET_FILE_DIR:OmniRenderDaemon>/Disocclusion.cso
-                $<TARGET_FILE_DIR:OmniRenderDaemon>/ReactiveMask.cso
-                $<TARGET_FILE_DIR:OmniRenderDaemon>/DepthLinearize.cso
+                ${CMAKE_BINARY_DIR}/modules/daemon/shaders/MotionReproject.cso
+                ${CMAKE_BINARY_DIR}/modules/daemon/shaders/Disocclusion.cso
+                ${CMAKE_BINARY_DIR}/modules/daemon/shaders/ReactiveMask.cso
+                ${CMAKE_BINARY_DIR}/modules/daemon/shaders/DepthLinearize.cso
                 $<TARGET_FILE_DIR:test_core_d3d11_execution>
             COMMENT "Copying core temporal CSOs next to test_core_d3d11_execution")
     endif()
