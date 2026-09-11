@@ -26,6 +26,10 @@
 #include "../../../core/resources/GpuTexture.h"
 #include "../../../core/frame/Resolution.h"
 
+namespace omnirender::graphics {
+class IGraphicsBuffer;  // held via shared_ptr members below
+}
+
 namespace omnirender::backends::spatial {
 
 class SpatialUpscaleBackend final : public IReconstructionBackend {
@@ -36,7 +40,7 @@ public:
     SpatialUpscaleBackend(const SpatialUpscaleBackend&) = delete;
     SpatialUpscaleBackend& operator=(const SpatialUpscaleBackend&) = delete;
 
-    const char* GetName() const override { return "FSR-Spatial"; }
+    std::string_view GetName() const noexcept override { return "FSR-Spatial"; }
 
     bool Initialize(graphics::IGraphicsDevice& device,
                     const core::Resolution& in_res,
@@ -45,7 +49,7 @@ public:
     void OnDeviceLost() override;
     bool OnDeviceRestored(graphics::IGraphicsDevice& device) override;
 
-    bool IsRuntimeAvailable() const override { return runtime_available_; }
+    bool IsRuntimeAvailable() const noexcept override { return runtime_available_; }
     bool Resize(const core::Resolution& in_res, const core::Resolution& out_res);
 
     ReconstructionResult Execute(core::FrameContext& fc,
