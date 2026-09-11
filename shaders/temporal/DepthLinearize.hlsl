@@ -49,7 +49,7 @@ void CSMain(uint3 id : SV_DispatchThreadID) {
 
     // Perspective linearization (standard-Z projection).
     const float viewZ  = (n * f) / max(f - raw * (f - n), 1e-6);
-    const float linear = saturate((viewZ - n) / (f - n));
+    const float linDepth = saturate((viewZ - n) / (f - n));
 
-    u_Linear[id.xy] = linear;
+    u_Linear[id.xy] = linDepth;
 }
