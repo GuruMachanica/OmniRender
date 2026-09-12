@@ -261,10 +261,11 @@ static void TestXessAdapterExecution() {
     });
 
     assert(graph.Compile());
-    // Commit 9 contract: XeSS must NOT claim success until the real
-    // xessD3D11Execute path is implemented. The adapter must reject
-    // execution (so the pipeline falls back to the spatial path) rather
-    // than fabricating DataSource::Reconstructed on absent hardware.
+    // Honesty contract: the execute path (xessD3D11Init + xessD3D11Execute) is
+    // real, but this test environment has no libxess_dx11.dll / XeSS-capable
+    // GPU, so the adapter must reject execution (letting the pipeline fall
+    // back to the spatial path) rather than fabricating
+    // DataSource::Reconstructed on absent hardware.
     assert(!graph.Execute(ctx));
     assert(adapter.Execute(ctx) == false);
     assert(ctx.color.source != DataSource::Reconstructed);

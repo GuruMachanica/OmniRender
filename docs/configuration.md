@@ -49,6 +49,7 @@ enable_upscale        = true
 enable_tonemap        = true
 enable_fsr            = true   # vendor-neutral FSR 1.0 fallback upscaler
 enable_dlss           = false  # NVIDIA NGX; falls back to FSR when absent
+enable_xess           = false  # Intel XeSS (libxess_dx11.dll); falls back to FSR when absent
 ```
 
 ### Output resolution policy
@@ -66,8 +67,11 @@ decides what to *present* — this is what makes upscaling actually engage:
 
 The presented resolution is never allowed to drop below the input
 (downscaling is out of scope). Backend selection order: DLSS when
-available and enabled, else FSR 1.0 (EASU + RCAS) on any GPU, else
-passthrough.
+available and enabled, else XeSS when available and enabled
+(`libxess_dx11.dll` placed next to the daemon — real neural
+reconstruction via `xessD3D11Execute`), else FSR 1.0 (EASU + RCAS) on
+any GPU, else passthrough. The active backend and the input→output
+resolution are shown live in the HUD.
 
 A sample profile for Skyrim is at
 [`docs/profiles/skyrim.toml`](./profiles/skyrim.toml).

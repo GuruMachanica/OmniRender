@@ -29,11 +29,11 @@
 #include "capture_adapter.h"
 #include "interop_d3d11.h"
 #include "presentation_win.h"
-#include "upscalers/xess_adapter.h"
 
 #include "../../runtime/Pipeline.h"
 #include "../../backends/reconstruction/dlss/DlssReconstructionBackend.h"
 #include "../../backends/reconstruction/spatial/SpatialUpscaleBackend.h"
+#include "../../backends/reconstruction/xess/XessReconstructionBackend.h"
 #include "../../graphics/d3d11/D3D11GraphicsDevice.h"
 #include "../../graphics/d3d11/D3D11CommandContext.h"
 
@@ -124,10 +124,17 @@ void RecordInitFailure() {
                   g_fail_count, delay_ms);
 }
 
-// Core-side DLSS backend (implements omnirender::backends::IReconstructionBackend,
+// Core-side DLSS and XeSS backends (implement omnirender::backends::IReconstructionBackend,
 // the interface runtime::Pipeline actually consumes). Created once and reused
-// across resizes; Pipeline::SetReconstructionBackend drives its Initialize().
+// across resizes; Pipeline::SetReconstructionBackend drives their Initialize().
 std::shared_ptr<backends::IReconstructionBackend> g_core_dlss;
+std::shared_ptr<backends::IReconstructionBackend> g_core_xess;
+
+// Human-readable name of the reconstruction backend actually attached to the
+// runtime pipeline ("NVIDIA DLSS", "Intel XeSS", "FSR 1.0 (EASU+RCAS)", or
+// "Passthrough" when upscaling is disabled/unavailable). Read by the HUD.
+std::string g_active_backend_name = "Passthrough";
+void SetActiveBackendName(const char* name) { g_active_backend_name = name; }
 
 // Attach the best available backend that can actually execute (issue #3).
 // Returns true if a functional backend was attached.
@@ -141,23 +148,32 @@ bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
         g_rt_pipeline->SetReconstructionBackend(g_core_dlss);
         auto* dlss = static_cast<backends::dlss::DlssReconstructionBackend*>(g_core_dlss.get());
         if (dlss->IsRuntimeAvailable()) {
+            SetActiveBackendName("NVIDIA DLSS");
             OMNI_LOG_INFO("runtime pipeline: DLSS attached (%ux%u -> %ux%u)",
                           in.width, in.height, out.width, out.height);
             return true;
         }
-        OMNI_LOG_INFO("runtime pipeline: DLSS init failed (state=%s); falling back to spatial",
+        OMNI_LOG_INFO("runtime pipeline: DLSS init failed (state=%s); falling back",
                       dlss->GetStateString());
         g_core_dlss.reset();
-        // Fall through to the FSR spatial fallback below.
+        // Fall through to XeSS, then the FSR spatial fallback below.
     }
     if (omnirender::config::g_enable_xess) {
-        auto& xess = upscaler::GetGlobalXessAdapter();
-        // XeSS Execute() returns false (not yet implemented), so treat it as
-        // unavailable in the runtime path to avoid poisoning the Required pass.
-        if (xess.IsRuntimeAvailable()) {
-            OMNI_LOG_INFO("runtime pipeline: XeSS SDK present but execute unimplemented; "
-                          "skipping attach (spatial fallback will be used)");
+        if (!g_core_xess) {
+            g_core_xess = std::make_shared<backends::xess::XessReconstructionBackend>();
         }
+        g_rt_pipeline->SetReconstructionBackend(g_core_xess);
+        auto* xess = static_cast<backends::xess::XessReconstructionBackend*>(g_core_xess.get());
+        if (xess->IsRuntimeAvailable()) {
+            SetActiveBackendName("Intel XeSS");
+            OMNI_LOG_INFO("runtime pipeline: XeSS attached (%ux%u -> %ux%u)",
+                          in.width, in.height, out.width, out.height);
+            return true;
+        }
+        OMNI_LOG_INFO("runtime pipeline: XeSS init failed (%s); falling back to spatial",
+                      xess->LastErrorString().c_str());
+        g_core_xess.reset();
+        // Fall through to the FSR spatial fallback below.
     }
 
     // Fallback: FSR 1.0 (EASU + RCAS) spatial upscaling. This runs on every
@@ -171,6 +187,7 @@ bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
         // and drops the backend on failure, mirroring the DLSS attach above.
         g_rt_pipeline->SetReconstructionBackend(spatial);
         if (spatial->IsRuntimeAvailable()) {
+            SetActiveBackendName("FSR 1.0 (EASU+RCAS)");
             OMNI_LOG_INFO("runtime pipeline: FSR spatial attached (%ux%u -> %ux%u)",
                           in.width, in.height, out.width, out.height);
             return true;
@@ -179,6 +196,7 @@ bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
                       spatial->LastErrorString().c_str());
         spatial->Shutdown();
     }
+    SetActiveBackendName("Passthrough");
     OMNI_LOG_INFO("runtime pipeline: no reconstruction backend (passthrough)");
     return false;
 }
@@ -255,6 +273,7 @@ void ShutdownRuntimePipeline() {
     g_rt_context.reset();
     g_rt_device.reset();
     g_core_dlss.reset();
+    g_core_xess.reset();
     g_device_ready = g_pipe_ready = false;
     g_input_res = g_output_res = {};
     g_color_fmt  = core::TextureFormat::Unknown;
@@ -310,6 +329,10 @@ int NewPipelineFrame(FrameSlot& slot) {
                         ? fc.output.Get()
                         : nullptr;
     return ok ? 0 : -1;
+}
+
+const char* GetActiveBackendName() noexcept {
+    return g_active_backend_name.c_str();
 }
 
 graphics::IGraphicsTexture* GetLastOutputTexture() noexcept {

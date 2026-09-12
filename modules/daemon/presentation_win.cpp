@@ -263,8 +263,24 @@ int RunPresentationLoop() {
                 Context()->OMSetRenderTargets(1, &g_rtv, nullptr);
                 std::wstring hw = GetGlobalProfiler().FormatHudText();
                 std::string hs;
-                hs.reserve(hw.size());
+                hs.reserve(hw.size() + 96);
                 for (wchar_t c : hw) hs.push_back(static_cast<char>(c & 0x7F));
+                // Live pipeline status: active backend + input→output scaling.
+                uint32_t out_w = 0, out_h = 0;
+                GetLastOutputResolution(&out_w, &out_h);
+                hs += "Backend:        ";
+                hs += GetActiveBackendName();
+                hs += "\nResolution:     ";
+                hs += std::to_string(last_width);
+                hs += " x ";
+                hs += std::to_string(last_height);
+                if (out_w != 0 && (out_w != last_width || out_h != last_height)) {
+                    hs += " -> ";
+                    hs += std::to_string(out_w);
+                    hs += " x ";
+                    hs += std::to_string(out_h);
+                }
+                hs += "\n";
                 RenderHudOverlay(Context(), hs, 16, 16, (int)last_width, (int)last_height);
             }
 

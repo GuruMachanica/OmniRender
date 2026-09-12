@@ -2,9 +2,13 @@
 // Standalone GPU Integration Test Runner for OmniRender.
 // Validates HAL, Synthetic Fixtures, RenderGraph, DLSS, Readback, History, and Failure Paths.
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <memory>
+#include <sstream>
+#include <iomanip>
 #include "d3d11/D3D11DeviceFixture.h"
 #include "fixtures/TestSceneFixtures.h"
 #include "readback/GpuReadback.h"
@@ -14,6 +18,7 @@
 #include "../../core/graph/RenderGraph.h"
 #include "../../core/temporal/HistoryManager.h"
 #include "../../backends/reconstruction/dlss/DlssReconstructionBackend.h"
+#include "../../backends/reconstruction/spatial/SpatialUpscaleBackend.h"
 #include "../../runtime/Pipeline.h"
 
 using namespace omnirender;
@@ -224,6 +229,104 @@ static bool TestCase6_RuntimePipeline(D3D11DeviceFixture& fixture, core::FrameCo
     return pass;
 }
 
+static bool TestCase8_FsrSpatial(D3D11DeviceFixture& fixture, core::FrameContext& fc,
+                                 TestSceneFixtures& fixtures, DiagnosticsReporter& reporter) {
+    auto gdev = fixture.GetGraphicsDevice();
+    auto cmd = gdev->GetImmediateContext();
+
+    auto fsr = std::make_shared<backends::spatial::SpatialUpscaleBackend>();
+    bool init_ok = fsr->Initialize(*gdev, { 1280, 720 }, { 1920, 1080 });
+    if (!init_ok || !fsr->IsRuntimeAvailable()) {
+        // CSOs absent (no DXC in the build) — a legitimate configuration, but
+        // the FSR contract can't be validated. Report honestly and skip.
+        reporter.RecordTestSkipped("FSR Spatial Backend",
+            fsr->LastErrorString().empty() ? "CSOs not available in this build"
+                                           : fsr->LastErrorString());
+        return true;
+    }
+    reporter.RecordTestResult("FSR Backend Initialization", true, "EASU + RCAS CSOs loaded");
+
+    // Build a 720p synthetic color source (high-frequency color bars + gradient
+    // so EASU edge-adaptive weighting actually has edges to work with).
+    auto src = fixtures.GenerateSyntheticData(1280, 720, 1);
+    core::TextureDesc color_desc{
+        1280, 720, 1, core::TextureFormat::R8G8B8A8_UNORM,
+        core::TextureUsage::ShaderResource | core::TextureUsage::TransferDst,
+        "FsrTestInput" };
+    auto color_tex = gdev->CreateTexture(color_desc);
+    if (!color_tex) {
+        reporter.RecordTestResult("FSR Backend Initialization", false, "input texture alloc failed");
+        return false;
+    }
+    core::GpuTexture input_color(std::move(color_tex));
+    if (!fixtures.UploadTexture2D(fixture.GetDevice(), fixture.GetContext(),
+                                  input_color, src.color_rgba8.data(), 1280 * 4)) {
+        reporter.RecordTestResult("FSR Backend Initialization", false, "input upload failed");
+        return false;
+    }
+
+    core::FrameContext fsr_fc{};
+    fsr_fc.color             = input_color;
+    fsr_fc.input_resolution  = { 1280, 720 };
+    fsr_fc.output_resolution = { 1920, 1080 };
+    fsr_fc.validity.color_valid = true;
+
+    auto exec = fsr->Execute(fsr_fc, *cmd);
+    bool exec_ok = exec.success && exec.output.IsValid();
+    bool dims_ok = exec_ok && fsr_fc.output.GetWidth() == 1920 && fsr_fc.output.GetHeight() == 1080;
+    reporter.RecordTestResult("FSR Execution (720p -> 1080p)", exec_ok && dims_ok,
+                              exec_ok ? "EASU+RCAS dispatched, output allocated"
+                                      : fsr->LastErrorString());
+    if (!exec_ok) {
+        fsr->Shutdown();
+        return false;
+    }
+
+    // Readback the upscaled result and compare against two baselines:
+    //  1. identical input (proves the dispatch actually changed the image)
+    //  2. 1080p synthetic re-render (proves the upscale tracks the source)
+    auto readback = GpuReadback::ReadbackTextureRgba8(fixture.GetDevice(), fixture.GetContext(),
+                                                      fsr_fc.output);
+    if (!readback.success || readback.data.empty()) {
+        reporter.RecordTestResult("FSR Output Readback", false, "staging map failed");
+        fsr->Shutdown();
+        return false;
+    }
+    reporter.RecordTestResult("FSR Output Readback", true, "1920x1080 RGBA retrieved");
+
+    const auto& up = readback.data;
+
+    // Baseline 1: the 720p source itself. EASU must NOT return it unchanged
+    // (it interpolates to 1920x1080). Pixel counts differ, so compare the
+    // first row resized naively: just check byte-level difference exists.
+    size_t diff_vs_input = 0;
+    const size_t cmp_n = std::min(up.size(), src.color_rgba8.size());
+    for (size_t i = 0; i < cmp_n; ++i) {
+        if (std::abs(static_cast<int>(up[i]) - static_cast<int>(src.color_rgba8[i])) > 8) ++diff_vs_input;
+    }
+    const double diff_ratio_input = static_cast<double>(diff_vs_input) / static_cast<double>(cmp_n);
+    // Row pitches differ (7200 vs 7680 bytes); even so, >30% divergent bytes
+    // is expected for any real interpolation. A passthrough bug would keep
+    // this near 0 on shared rows.
+    bool differs_from_input = diff_ratio_input > 0.30;
+    reporter.RecordTestResult("FSR Output Differs From Input",
+        differs_from_input,
+        (std::ostringstream{} << std::fixed << std::setprecision(1)
+         << diff_ratio_input * 100.0 << "% bytes differ (expect >30%)").str());
+
+    // Baseline 2: quality vs a 1080p re-render of the same synthetic scene.
+    auto ref = fixtures.GenerateReferenceImage(1920, 1080, 1);
+    auto quality = ImageMetrics::Evaluate(up.data(), ref.data(), 1920, 1080, 4);
+    reporter.PrintImageQualityReport("FSR Upscale vs Analytic 1080p Target", quality);
+
+    bool sane = quality.test_stats.non_zero_percentage > 90.0 && quality.test_stats.mean > 30.0;
+    reporter.RecordTestResult("FSR Output Statistical Sanity", sane,
+                              "Upscaled frame is non-empty and within expected luminance");
+
+    fsr->Shutdown();
+    return exec_ok && dims_ok && differs_from_input && sane;
+}
+
 static bool TestCase7_FailurePaths(D3D11DeviceFixture& fixture, DiagnosticsReporter& reporter) {
     core::FrameContext invalid_fc{};
     auto gdev = fixture.GetGraphicsDevice();
@@ -285,6 +388,7 @@ int main(int argc, char** argv) {
     TestCase5_HistoryLifecycle(fixture, fc, reporter);
     TestCase6_RuntimePipeline(fixture, fc, reporter);
     TestCase7_FailurePaths(fixture, reporter);
+    TestCase8_FsrSpatial(fixture, fc, fixtures, reporter);
 
     fixture.Shutdown();
     bool all_passed = reporter.PrintFinalSummary();

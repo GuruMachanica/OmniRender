@@ -10,6 +10,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ### Added
+- **Intel XeSS neural reconstruction backend for the runtime pipeline** —
+  real `xessD3D11Init` + `xessD3D11Execute` through a dynamically loaded
+  `libxess_dx11.dll` (`backends/reconstruction/xess/`), with the packed(8)
+  XeSS ABI mirrored locally so no SDK headers are needed at build time.
+  The backend consumes the runtime pipeline's linearized depth and
+  pixel-space motion vectors, honors `pipeline.enable_xess` (off by
+  default), and honestly reports unavailable on failure so selection
+  falls through to FSR. Backend priority is now DLSS → XeSS → FSR →
+  passthrough.
+- **HUD pipeline status** — the overlay now shows the active backend
+  ("NVIDIA DLSS" / "Intel XeSS" / "FSR 1.0 (EASU+RCAS)" / "Passthrough")
+  and the live input → output resolution alongside the latency profiler.
 - **FSR 1.0 spatial upscaling backend for the runtime pipeline** — the
   real EASU + RCAS compute dispatch (`backends/reconstruction/spatial/`)
   now runs when DLSS is unavailable, on every vendor, with no SDK. It
@@ -25,6 +37,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   pipeline failures so the swapchain does not flap).
 
 ### Changed
+- **Legacy XeSS adapter (`modules/daemon/upscalers/xess_adapter`)**
+  rewritten from a guaranteed-fail stub to a real execute path (same
+  mirrored ABI, per-resolution feature lifecycle, adapter-owned output
+  texture instead of a leaking function-local static). Unit-test contract
+  updated: without the runtime DLL the adapter must *reject* execution
+  (never fabricate `DataSource::Reconstructed`).
 - **Keyed-mutex ownership moved into `CaptureAdapter`** — the mutex on the
   imported color texture is acquired inside `Adapt()` (before any pipeline
   read) and released on the next `Adapt()`/destruction. The presentation

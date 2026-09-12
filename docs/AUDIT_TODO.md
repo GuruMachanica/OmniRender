@@ -34,9 +34,10 @@ either:
 
 ## Upscaling (audit §6, §7)
 
-- ⏭ **DLSS** via Streamline / NGX — `0.5.0-alpha`. (audit point #6 — we already say we don't have it.)
-- ⏭ **FSR 2/3** via FidelityFX SDK — `0.5.0-alpha`.
-- ⏭ **XeSS** — not currently planned (no public SDK at the time of writing).
+- ✅ **DLSS** via NGX — landed (`backends/reconstruction/dlss/`, real `NVSDK_NGX` evaluation with registry-based loader).
+- ✅ **XeSS** via `libxess_dx11.dll` — landed (`backends/reconstruction/xess/`, mirrored packed ABI, real `xessD3D11Init` + `xessD3D11Execute`, no SDK headers needed).
+- ✅ **FSR 1.0 (EASU + RCAS)** — landed (`backends/reconstruction/spatial/`, vendor-neutral fallback, on by default).
+- ⏭ **FSR 2/3** temporal upscaling via FidelityFX SDK — `0.5.0-alpha`.
 
 ## Tone mapping (audit §9)
 
