@@ -37,7 +37,8 @@ public:
 
     std::vector<uint8_t> GenerateReferenceImage(uint32_t width, uint32_t height, uint64_t frame_index = 0);
 
-private:
+    // Upload CPU pixel data into a GpuTexture (public so the FSR backend test
+    // can build a custom input-resolution color source).
     bool UploadTexture2D(ID3D11Device* dev, ID3D11DeviceContext* ctx,
                          core::GpuTexture& tex, const void* data, uint32_t row_pitch);
 };
