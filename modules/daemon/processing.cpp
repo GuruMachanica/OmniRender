@@ -254,10 +254,10 @@ void PresentProcessed(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* srv, U
     // letterboxed centered rect instead of stretching. The source dimensions
     // come from the SRV's resource so passthrough and upscaled frames behave
     // identically.
-    D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc{};
     UINT src_w = target_w, src_h = target_h;
     ID3D11Resource* res = nullptr;
-    if (SUCCEEDED(srv->GetResource(&res)) && res) {
+    srv->GetResource(&res);  // void return — no HRESULT to check
+    if (res) {
         ID3D11Texture2D* tex = nullptr;
         if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex))) && tex) {
             D3D11_TEXTURE2D_DESC td{};
