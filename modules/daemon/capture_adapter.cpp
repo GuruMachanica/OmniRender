@@ -75,10 +75,13 @@ const uint8_t* CaptureAdapter::MapPixelBlock(const OmniRenderIPCFrameData& p) {
     if (p.struct_version < omnirender::kIpcVersion_V050) return nullptr;
     if (p.pixel_block_name[0] == '\0' || p.pixel_data_size == 0) return nullptr;
 
-    // The block name is stable per process; remap only if not open yet.
-    if (pixel_mapping_ && pixel_view_) {
+    // The block name is resolution-unique (hook creates a new section on
+    // resize). Track the name we mapped and remap whenever it changes —
+    // reusing a stale view across a resize would read wrong-sized data.
+    if (pixel_mapping_ && pixel_view_ && mapped_block_name_ == p.pixel_block_name) {
         return pixel_view_;
     }
+    UnmapPixelBlock();
 
     pixel_mapping_ = ::OpenFileMappingA(FILE_MAP_READ, FALSE, p.pixel_block_name);
     if (!pixel_mapping_) {
@@ -96,6 +99,7 @@ const uint8_t* CaptureAdapter::MapPixelBlock(const OmniRenderIPCFrameData& p) {
     }
     OMNI_LOG_INFO("CaptureAdapter: GL pixel block mapped (%s, %u bytes)",
                   p.pixel_block_name, p.pixel_data_size);
+    mapped_block_name_ = p.pixel_block_name;
     return pixel_view_;
 }
 
@@ -104,6 +108,7 @@ void CaptureAdapter::UnmapPixelBlock() noexcept {
         ::UnmapViewOfFile(pixel_view_);
         pixel_view_ = nullptr;
     }
+    mapped_block_name_.clear();
     if (pixel_mapping_) {
         ::CloseHandle(pixel_mapping_);
         pixel_mapping_ = nullptr;

@@ -8,10 +8,11 @@
 // pixels-per-frame motion vectors; XeSS dilates the MVs itself on the low-res
 // MV path.
 //
-// XeSS D3D11 officially supports Intel Arc and later (XeSS 1.3+ also runs DP4a
-// fallbacks on NVIDIA/AMD/Intel, gated by the runtime's own checks). When the
-// DLL is missing or Init/Execute fail, the backend reports unavailable and the
-// pipeline falls back to the FSR spatial path.
+// XeSS D3D11 officially supports Intel Arc and later ONLY — per Intel's SR
+// guide, context creation on non-Intel devices fails with
+// XESS_RESULT_ERROR_UNSUPPORTED_DEVICE (the cross-vendor DP4a path is D3D12
+// only). When the DLL is missing or Init/Execute fail, the backend reports
+// unavailable and the pipeline falls back to the FSR spatial path.
 
 #include "XessReconstructionBackend.h"
 
@@ -32,9 +33,15 @@ constexpr int32_t kXessQualityBalanced = 102;
 // xess_result_t (xess.h)
 constexpr int kXessResultSuccess = 0;
 
-// xess_init_flags (xess.h) — none set: low-res MVs + depth (XeSS dilates),
-// scene-referred color (no LDR/inverse-tonemap flag).
-constexpr uint32_t kXessInitFlagsNone = 0;
+// xess_init_flags (xess.h):
+//  - LDR_INPUT_COLOR: the hook captures final (tonemapped) UNORM backbuffer
+//    data, which is LDR by definition. Intel's guide requires the flag for
+//    LDR input and recommends exposure = 1.0 with no auto-exposure (we pass
+//    exposure_scale = 1.0 in Execute).
+//  - No HIGH_RES_MV: we supply low-res MVs + depth and let XeSS dilate.
+//  - No INVERTED_DEPTH: DepthProvider linearizes to near=0 (smaller = closer,
+//    XeSS's default convention) regardless of the game's raw depth order.
+constexpr uint32_t kXessInitFlags = 1u << 6;  // XESS_INIT_FLAG_LDR_INPUT_COLOR
 
 const char* XessResultString(int result) {
     switch (result) {
@@ -112,7 +119,7 @@ bool XessReconstructionBackend::EnsureFeature(uint32_t in_w, uint32_t in_h,
     XessD3D11InitParams init{};
     init.output_resolution = { out_w, out_h };
     init.quality_setting   = kXessQualityBalanced;
-    init.init_flags        = kXessInitFlagsNone;
+    init.init_flags        = kXessInitFlags;
 
     const int rc = pfn_init_(context_, &init);
     if (rc != kXessResultSuccess) {
@@ -266,9 +273,13 @@ ReconstructionResult XessReconstructionBackend::Execute(core::FrameContext& fc,
         return { {}, {}, false };
     }
 
-    // Motion vectors from the runtime pipeline are pixels-per-frame, y-down
-    // (docs/ipc.md). XeSS applies its own velocity scale internally on the
-    // D3D11 path; jitter is passed in the [-0.5, 0.5] pixel contract.
+    // Motion-vector contract (Intel SR guide, "Motion Vectors" + "Velocity
+    // Scale"): XeSS expects screen-space motion in PIXELS from the current
+    // frame to the previous frame, and its default velocity scale is 1.0 =
+    // pixels — exactly the runtime pipeline's MV convention, so no
+    // xessSetVelocityScale call is needed. Jitter is passed in the
+    // [-0.5, 0.5] pixel contract. Depth: XeSS's default is "smaller = closer",
+    // which is what DepthProvider's linearized [0,1] output produces.
     XessD3D11ExecuteParams params{};
     params.pColorTexture               = color_res;
     params.pVelocityTexture            = motion_res;

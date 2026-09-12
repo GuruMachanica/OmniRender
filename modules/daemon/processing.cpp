@@ -6,6 +6,7 @@
 #include <dxgi1_4.h>
 #include <d3d11.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #include "../common/logging.h"
@@ -241,13 +242,55 @@ void DispatchRayTracing(ID3D11DeviceContext* ctx, UINT w, UINT h) {
 void PresentProcessed(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* srv, UINT target_w, UINT target_h, bool) {
     if (!ctx || !srv) return;
     ID3D11RenderTargetView* rtv = RenderTargetView(); if (!rtv) return;
+
     D3D11_VIEWPORT vp{ 0.0f, 0.0f, static_cast<float>(target_w ? target_w : 1), static_cast<float>(target_h ? target_h : 1), 0.0f, 1.0f };
     ctx->OMSetRenderTargets(1, &rtv, nullptr); ctx->RSSetViewports(1, &vp);
     ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx->VSSetShader(g_processing.passthrough_vs, nullptr, 0); ctx->PSSetShader(g_processing.passthrough_ps, nullptr, 0);
     if (g_processing.linear_sampler) ctx->PSSetSamplers(0, 1, &g_processing.linear_sampler);
+
+    // Aspect-true compose: when the source aspect differs from the swapchain
+    // aspect (e.g. a 4:3 game in a 16:9 screen-mode swapchain), draw into a
+    // letterboxed centered rect instead of stretching. The source dimensions
+    // come from the SRV's resource so passthrough and upscaled frames behave
+    // identically.
+    D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+    UINT src_w = target_w, src_h = target_h;
+    ID3D11Resource* res = nullptr;
+    if (SUCCEEDED(srv->GetResource(&res)) && res) {
+        ID3D11Texture2D* tex = nullptr;
+        if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex))) && tex) {
+            D3D11_TEXTURE2D_DESC td{};
+            tex->GetDesc(&td);
+            src_w = td.Width;
+            src_h = td.Height;
+            tex->Release();
+        }
+        res->Release();
+    }
+    if (src_w > 0 && src_h > 0 && target_w > 0 && target_h > 0) {
+        const float src_aspect = static_cast<float>(src_w) / static_cast<float>(src_h);
+        const float dst_aspect = static_cast<float>(target_w) / static_cast<float>(target_h);
+        constexpr float kAspectEpsilon = 0.005f;
+        if (std::abs(src_aspect - dst_aspect) > kAspectEpsilon) {
+            UINT draw_w = target_w, draw_h = target_h;
+            if (src_aspect > dst_aspect) {
+                draw_h = static_cast<UINT>(0.5f + static_cast<float>(target_w) / src_aspect);
+            } else {
+                draw_w = static_cast<UINT>(0.5f + static_cast<float>(target_h) * src_aspect);
+            }
+            const UINT off_x = (target_w - draw_w) / 2u;
+            const UINT off_y = (target_h - draw_h) / 2u;
+            D3D11_VIEWPORT letterbox_vp{
+                static_cast<float>(off_x), static_cast<float>(off_y),
+                static_cast<float>(draw_w), static_cast<float>(draw_h), 0.0f, 1.0f };
+            ctx->RSSetViewports(1, &letterbox_vp);
+        }
+    }
+
     ctx->PSSetShaderResources(0, 1, &srv); ctx->Draw(3, 0);
     ID3D11ShaderResourceView* null_srv[1] = {}; ctx->PSSetShaderResources(0, 1, null_srv);
+    ctx->RSSetViewports(1, &vp);  // restore full-surface viewport for HUD/next frame
 }
 
 void EndFrameProcessing(ID3D11DeviceContext* ctx, ID3D11Texture2D* current_depth) {

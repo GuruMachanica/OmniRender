@@ -17,6 +17,7 @@
 
 #include "pipeline_runtime.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <windows.h>
@@ -55,18 +56,29 @@ core::Resolution ResolveOutputResolution(const core::Resolution& input) {
     if (mode == "native") {
         return input;
     } else if (mode == "screen") {
-        // Desktop resolution of the primary display. The overlay window covers
-        // the whole screen, so this is the natural "fill the monitor" target.
+        // Largest aspect-true output that fits the primary display. Taking the
+        // raw desktop resolution would make the scaler itself distort the
+        // image (a 4:3 game resampled into 16:9 has unequal x/y EASU scales).
+        // The overlay's letterboxed compose fills the remaining bars.
         HMONITOR mon = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
         MONITORINFO mi{};
         mi.cbSize = sizeof(mi);
+        uint32_t screen_w = omnirender::config::g_output_width;
+        uint32_t screen_h = omnirender::config::g_output_height;
         if (mon && GetMonitorInfoW(mon, &mi)) {
-            out = { static_cast<uint32_t>(mi.rcMonitor.right - mi.rcMonitor.left),
-                    static_cast<uint32_t>(mi.rcMonitor.bottom - mi.rcMonitor.top) };
-        } else {
-            out = { omnirender::config::g_output_width,
-                    omnirender::config::g_output_height };
+            screen_w = static_cast<uint32_t>(mi.rcMonitor.right - mi.rcMonitor.left);
+            screen_h = static_cast<uint32_t>(mi.rcMonitor.bottom - mi.rcMonitor.top);
         }
+        const uint64_t in_area  = static_cast<uint64_t>(input.width)  * input.height;
+        const uint64_t scr_area = static_cast<uint64_t>(screen_w) * screen_h;
+        if (in_area == 0 || scr_area <= in_area) {
+            return input;  // screen smaller than the game: never downscale
+        }
+        const float f = std::min(
+            static_cast<float>(screen_w) / static_cast<float>(input.width),
+            static_cast<float>(screen_h) / static_cast<float>(input.height));
+        out = { static_cast<uint32_t>(input.width  * f + 0.5f),
+                static_cast<uint32_t>(input.height * f + 0.5f) };
     } else if (mode == "quality") {
         out = { input.width * 3u / 2u, input.height * 3u / 2u };
     } else if (mode == "ultra") {
@@ -104,21 +116,25 @@ bool g_pipe_ready   = false;
 // #15: last reconstructed output texture (valid until next frame).
 graphics::IGraphicsTexture* g_last_output_tex = nullptr;
 
-// Retry backoff state (issue #13).
+// Retry backoff state (issue #13). Exponential backoff capped at
+// kMaxRetryMs: the daemon keeps retrying forever at the cap instead of
+// giving up permanently, so a transient device removal (TDR) or a driver
+// update heals itself without a daemon restart.
 using Clock     = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
-static constexpr int kMaxFailures    = 8;
 static constexpr int kBaseRetryMs    = 500;
+static constexpr int kMaxRetryMs     = 30000;
 int       g_fail_count   = 0;
 TimePoint g_next_retry   = Clock::now();
 
 bool IsRetryAllowed() {
-    return g_fail_count < kMaxFailures && Clock::now() >= g_next_retry;
+    return Clock::now() >= g_next_retry;
 }
 
 void RecordInitFailure() {
     ++g_fail_count;
-    int delay_ms = kBaseRetryMs * (1 << std::min(g_fail_count, 7));
+    const int delay_ms = std::min(kBaseRetryMs * (1 << std::min(g_fail_count, 6)),
+                                  kMaxRetryMs);
     g_next_retry = Clock::now() + std::chrono::milliseconds(delay_ms);
     OMNI_LOG_WARN("runtime pipeline: init failed (attempt %d); retry in %d ms",
                   g_fail_count, delay_ms);

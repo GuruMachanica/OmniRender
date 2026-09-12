@@ -59,7 +59,7 @@ struct OmniRenderIPCFrameData {
     uint32_t motion_format;         // NEW v0.4.0: DXGI_FORMAT_R16G16_FLOAT
     uint32_t flags;                 // Bit 0: Reversed Z, Bit 1: Depth Inverted
     // NEW v0.5.0 (2): CPU pixel fallback channel (OpenGL without interop).
-    char     pixel_block_name[48];  // Named file mapping ("Local\\OmniRender_GL_Pixels_<pid>"), empty = none
+    char     pixel_block_name[48];  // Named file mapping, resolution-unique ("Local\\OmniRender_GL_Pixels_<pid>_<w>x<h>"), empty = none
     uint32_t pixel_data_size;       // Total bytes in the mapping
     uint32_t pixel_row_pitch;       // Bytes per row (width * 4 for RGBA8)
 };

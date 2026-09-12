@@ -4,9 +4,10 @@
 // Real execution path: libxess_dx11.dll is loaded dynamically and
 // xessD3D11CreateContext / xessD3D11Init / xessD3D11Execute are resolved by
 // name. The packed(8) parameter structs are mirrored in the header so no XeSS
-// SDK headers are needed at build time. XeSS D3D11 only works on Intel
-// hardware; on other vendors the DLL load or Init will fail and the adapter
-// honestly reports unavailable so the pipeline falls back to FSR spatial.
+// SDK headers are needed at build time. The D3D11 XeSS path is Intel Arc ONLY
+// (context creation on non-Intel devices fails with UNSUPPORTED_DEVICE per
+// Intel's SR guide); on any other hardware the DLL load or Init fails and the
+// adapter honestly reports unavailable so the pipeline falls back to FSR.
 
 #include "xess_adapter.h"
 
@@ -36,15 +37,10 @@ typedef int (*PFN_xessD3D11Init)(XessContextHandle hContext,
 typedef int (*PFN_xessD3D11Execute)(XessContextHandle hContext,
                                     const void* pExecParams /* xess_d3d11_execute_params_t */);
 typedef int (*PFN_xessDestroyContext)(XessContextHandle hContext);
-typedef int (*PFN_xessGetVelocityScale)(XessContextHandle hContext, float* pX, float* pY);
-typedef int (*PFN_xessGetJitterScale)(XessContextHandle hContext, float* pX, float* pY);
-
 PFN_xessD3D11CreateContext pfn_xessCreate  = nullptr;
 PFN_xessD3D11Init          pfn_xessInit    = nullptr;
 PFN_xessD3D11Execute       pfn_xessExecute = nullptr;
 PFN_xessDestroyContext     pfn_xessDestroy = nullptr;
-PFN_xessGetVelocityScale   pfn_xessGetVelScale = nullptr;
-PFN_xessGetJitterScale     pfn_xessGetJitScale = nullptr;
 
 XessAdapter g_global_xess_adapter;
 
@@ -122,10 +118,6 @@ bool XessAdapter::LoadXessLibraries() {
         ::GetProcAddress(xess_module_, "xessD3D11Execute"));
     pfn_xessDestroy = reinterpret_cast<PFN_xessDestroyContext>(
         ::GetProcAddress(xess_module_, "xessDestroyContext"));
-    pfn_xessGetVelScale = reinterpret_cast<PFN_xessGetVelocityScale>(
-        ::GetProcAddress(xess_module_, "xessGetVelocityScale"));
-    pfn_xessGetJitScale = reinterpret_cast<PFN_xessGetJitterScale>(
-        ::GetProcAddress(xess_module_, "xessGetJitterScale"));
 
     if (!pfn_xessCreate || !pfn_xessInit || !pfn_xessExecute || !pfn_xessDestroy) {
         OMNI_LOG_ERROR("XeSS: libxess_dx11.dll missing required exports");
@@ -148,8 +140,6 @@ void XessAdapter::UnloadLibraries() {
     pfn_xessInit = nullptr;
     pfn_xessExecute = nullptr;
     pfn_xessDestroy = nullptr;
-    pfn_xessGetVelScale = nullptr;
-    pfn_xessGetJitScale = nullptr;
 
     if (xess_module_) {
         ::FreeLibrary(xess_module_);
@@ -238,8 +228,13 @@ bool XessAdapter::EnsureFeature(uint32_t input_w, uint32_t input_h,
     init.output_resolution = { output_w, output_h };
     init.quality_setting   = kXessQualityBalanced;
     // No HIGH_RES_MV: we supply low-res MVs + depth and let XeSS dilate.
-    // No LDR flag: captured frames are treated as scene-referred color.
-    init.init_flags        = 0;
+    // LDR_INPUT_COLOR (1<<6): the hook captures final tonemapped UNORM
+    // backbuffer data — LDR by definition. Intel's guide requires the flag
+    // for LDR input and recommends exposure = 1.0 with no auto-exposure
+    // (Execute passes exposure_scale = 1.0).
+    // No INVERTED_DEPTH: linearized depth has near = 0 (smaller = closer,
+    // XeSS's default convention).
+    init.init_flags        = 1u << 6;  // XESS_INIT_FLAG_LDR_INPUT_COLOR
 
     const int rc = pfn_xessInit(xess_context_, &init);
     if (rc != kXessResultSuccess) {
@@ -287,19 +282,11 @@ bool XessAdapter::Execute(FrameContext& ctx) {
         return false;
     }
 
-    // XeSS expects velocity scaled to pixels-per-frame *and* direction/
-    // y-axis normalized via xessGetVelocityScale. Query the runtime rather
-    // than hardcoding; fall back to the documented defaults when the query
-    // is unavailable. The MV producer's scaling contract is documented in
-    // docs/ipc.md (pixels-per-frame, y-down); XeSS's scale is applied to
-    // that convention by the runtime itself.
-    if (pfn_xessGetVelScale && xess_context_) {
-        float qx = 0.0f, qy = 0.0f;
-        if (pfn_xessGetVelScale(xess_context_, &qx, &qy) == kXessResultSuccess) {
-            OMNI_LOG_INFO("XeSS: velocity scale (%.3f, %.3f)", qx, qy);
-        }
-    }
-    (void)pfn_xessGetJitScale;  // jitter passed in [-0.5,0.5] directly
+    // Motion-vector contract (Intel SR guide): XeSS expects screen-space
+    // motion in PIXELS, current frame -> previous frame, default velocity
+    // scale 1.0 = pixels. That is exactly the MV producer's convention
+    // (docs/ipc.md: pixels-per-frame, current->previous), so no
+    // xessSetVelocityScale call is needed. Jitter is passed in [-0.5, 0.5].
 
     // Output texture: target-resolution R8G8B8A8, created once per resolution
     // pair and owned by the adapter (released in Shutdown via UnloadLibraries).

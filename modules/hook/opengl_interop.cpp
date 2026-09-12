@@ -246,8 +246,15 @@ bool CaptureGLFrameCpu(HDC hdc, int width, int height,
         ShutdownGLPixelBlock();
     }
     if (!g_pixel_mapping) {
+        // Resolution-unique name: on a game resize we create a NEW section
+        // rather than reusing the name. The daemon may still hold a view of
+        // the previous section — recreating under the same name while that
+        // view is open is undefined behavior territory (the creator can end
+        // up opening the old, wrong-sized section object).
         g_pixel_block_name = std::string("Local\\OmniRender_GL_Pixels_")
-                             + std::to_string(::GetCurrentProcessId());
+                             + std::to_string(::GetCurrentProcessId())
+                             + "_" + std::to_string(w)
+                             + "x" + std::to_string(h);
         g_pixel_mapping = ::CreateFileMappingA(
             INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, total,
             g_pixel_block_name.c_str());

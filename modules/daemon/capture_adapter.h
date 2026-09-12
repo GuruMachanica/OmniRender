@@ -87,6 +87,7 @@ private:
     // CPU pixel fallback channel (OpenGL without WGL_NV_DX_interop2).
     void*    pixel_mapping_   = nullptr;  // HANDLE, void* to keep this header platform-neutral
     uint8_t* pixel_view_      = nullptr;
+    std::string mapped_block_name_;       // section name currently mapped (resolution-unique)
     uint64_t pixel_pid_generation_ = 0;   // last payload.frame_index the block was mapped for
     std::shared_ptr<graphics::IGraphicsTexture> pixel_upload_tex_;
     uint32_t pixel_tex_width_  = 0;
