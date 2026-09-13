@@ -189,4 +189,87 @@ extern "C" IDirect3D9* WINAPI Proxy_Direct3DCreate9(UINT SDKVersion) {
 #pragma comment(linker, "/EXPORT:Direct3DCreate9=Proxy_Direct3DCreate9")
 #endif
 
+// ---------------------------------------------------------------------------
+// Remaining d3d9.dll export family. A proxy that exports ONLY
+// Direct3DCreate9 breaks any game whose import table also references the
+// D3DPERF_* PIX-profiling functions or Direct3DCreate9Ex: the Windows loader
+// fails the process before main() with STATUS_ENTRYPOINT_NOT_FOUND — a
+// silent death with no dialog. 2005-era engines (Jade/Ubisoft among them)
+// commonly carry those imports.
+// All forwarders resolve against the real system d3d9.dll and behave as
+// pass-throughs; capture hooking happens through Direct3DCreate9 above.
+// ---------------------------------------------------------------------------
+static FARPROC GetRealD3D9Proc(const char* name) {
+    HMODULE real_dll = GetRealD3D9Module();
+    return real_dll ? ::GetProcAddress(real_dll, name) : nullptr;
+}
+
+extern "C" HRESULT WINAPI Proxy_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** out) {
+    using PFN = HRESULT (WINAPI*)(UINT, IDirect3D9Ex**);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("Direct3DCreate9Ex"));
+    if (!pfn) return E_NOTIMPL;
+    HRESULT hr = pfn(SDKVersion, out);
+    // Hook the Ex path too: Direct3DCreate9Ex-created devices bypass the
+    // plain Create9 hook otherwise.
+    if (SUCCEEDED(hr) && out && *out) {
+        omnirender::hook::InstallD3D9Hooks(*out);
+    }
+    return hr;
+}
+extern "C" int WINAPI Proxy_D3DPERF_BeginEvent(DWORD col, LPCWSTR name) {
+    using PFN = int (WINAPI*)(DWORD, LPCWSTR);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("D3DPERF_BeginEvent"));
+    return pfn ? pfn(col, name) : 0;
+}
+extern "C" int WINAPI Proxy_D3DPERF_EndEvent(void) {
+    using PFN = int (WINAPI*)(void);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("D3DPERF_EndEvent"));
+    return pfn ? pfn() : 0;
+}
+extern "C" void WINAPI Proxy_D3DPERF_SetMarker(DWORD col, LPCWSTR name) {
+    using PFN = void (WINAPI*)(DWORD, LPCWSTR);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("D3DPERF_SetMarker"));
+    if (pfn) pfn(col, name);
+}
+extern "C" void WINAPI Proxy_D3DPERF_SetRegion(DWORD col, LPCWSTR name) {
+    using PFN = void (WINAPI*)(DWORD, LPCWSTR);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("D3DPERF_SetRegion"));
+    if (pfn) pfn(col, name);
+}
+extern "C" BOOL WINAPI Proxy_D3DPERF_QueryRepeatFrame(void) {
+    using PFN = BOOL (WINAPI*)(void);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("D3DPERF_QueryRepeatFrame"));
+    return pfn ? pfn() : FALSE;
+}
+extern "C" void WINAPI Proxy_D3DPERF_SetOptions(DWORD options) {
+    using PFN = void (WINAPI*)(DWORD);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("D3DPERF_SetOptions"));
+    if (pfn) pfn(options);
+}
+extern "C" DWORD WINAPI Proxy_D3DPERF_GetStatus(void) {
+    using PFN = DWORD (WINAPI*)(void);
+    auto pfn = reinterpret_cast<PFN>(GetRealD3D9Proc("D3DPERF_GetStatus"));
+    return pfn ? pfn() : 0;
+}
+
+#if defined(_M_IX86)
+#pragma comment(linker, "/EXPORT:Direct3DCreate9Ex=_Proxy_Direct3DCreate9Ex@8")
+#pragma comment(linker, "/EXPORT:D3DPERF_BeginEvent=_Proxy_D3DPERF_BeginEvent@8")
+#pragma comment(linker, "/EXPORT:D3DPERF_EndEvent=_Proxy_D3DPERF_EndEvent@0")
+#pragma comment(linker, "/EXPORT:D3DPERF_SetMarker=_Proxy_D3DPERF_SetMarker@8")
+#pragma comment(linker, "/EXPORT:D3DPERF_SetRegion=_Proxy_D3DPERF_SetRegion@8")
+#pragma comment(linker, "/EXPORT:D3DPERF_QueryRepeatFrame=_Proxy_D3DPERF_QueryRepeatFrame@0")
+#pragma comment(linker, "/EXPORT:D3DPERF_SetOptions=_Proxy_D3DPERF_SetOptions@4")
+#pragma comment(linker, "/EXPORT:D3DPERF_GetStatus=_Proxy_D3DPERF_GetStatus@0")
+#else
+#pragma comment(linker, "/EXPORT:Direct3DCreate9Ex=Proxy_Direct3DCreate9Ex")
+#pragma comment(linker, "/EXPORT:D3DPERF_BeginEvent=Proxy_D3DPERF_BeginEvent")
+#pragma comment(linker, "/EXPORT:D3DPERF_EndEvent=Proxy_D3DPERF_EndEvent")
+#pragma comment(linker, "/EXPORT:D3DPERF_SetMarker=Proxy_D3DPERF_SetMarker")
+#pragma comment(linker, "/EXPORT:D3DPERF_SetRegion=Proxy_D3DPERF_SetRegion")
+#pragma comment(linker, "/EXPORT:D3DPERF_QueryRepeatFrame=Proxy_D3DPERF_QueryRepeatFrame")
+#pragma comment(linker, "/EXPORT:D3DPERF_SetOptions=Proxy_D3DPERF_SetOptions")
+#pragma comment(linker, "/EXPORT:D3DPERF_GetStatus=Proxy_D3DPERF_GetStatus")
+#endif
+
 

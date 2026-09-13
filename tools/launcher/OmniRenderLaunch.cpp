@@ -257,8 +257,36 @@ int wmain(int argc, wchar_t** argv) {
         Fail(L"ResumeThread failed");
         return 3;
     }
+
+    // Early-exit watchdog: a proxy DLL the game's loader cannot satisfy
+    // (missing exports) kills the process before main() with no dialog.
+    // Surface that instead of pretending the launch succeeded.
+    bool exited_early = false;
+    DWORD exit_code = 0;
+    for (int i = 0; i < 30; ++i) {  // ~3 s of monitoring
+        const DWORD wait = ::WaitForSingleObject(pi.hProcess, 100);
+        if (wait == WAIT_OBJECT_0) {
+            ::GetExitCodeProcess(pi.hProcess, &exit_code);
+            exited_early = true;
+            break;
+        }
+        if (wait == WAIT_FAILED) break;
+    }
     ::CloseHandle(pi.hThread);
     ::CloseHandle(pi.hProcess);
+
+    if (exited_early) {
+        Fail(L"game process exited immediately — the Windows loader could not start it");
+        std::fwprintf(stderr,
+            L"  exit code: %lu (0x%08lX)\n"
+            L"  0xC0000139 = STATUS_ENTRYPOINT_NOT_FOUND: the game imports a function"
+            L" our proxy DLL does not export — report the game on the issue tracker.\n"
+            L"  0xC0000135 = STATUS_DLL_NOT_FOUND: a different dependency is missing.\n"
+            L"  Other codes: try launching the game normally through Steam; if that"
+            L" works, the proxies themselves are fine and this is a launch-order issue.\n",
+            exit_code, exit_code);
+        return 3;
+    }
 
     std::fwprintf(stdout,
         L"[OmniRender] game + daemon running.\n"
