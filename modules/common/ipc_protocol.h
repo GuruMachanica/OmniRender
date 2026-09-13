@@ -33,6 +33,13 @@ inline constexpr const char* kFrameReadyEventNameLocal = "Local\\OmniRender_Fram
 //   - pixel_block_name / pixel_data_size / pixel_row_pitch describe a named
 //     shared file mapping holding raw top-down RGBA8 frame pixels.
 //
+// v0.6.0-alpha (struct_version 3) adds the CPU depth-fallback channel, also
+// for the OpenGL path: the hook reads the current depth buffer with
+// glReadPixels(GL_DEPTH_COMPONENT / GL_FLOAT) (window depth [0,1], top-down)
+// into a second resolution-unique mapping.
+//   - depth_block_name / depth_data_size / depth_row_pitch describe it.
+//   - IpcFlag::DepthDataCpu marks the channel as populated.
+//
 // The daemon checks struct_version on every frame and gracefully falls
 // back to passthrough if an older hook payload arrives.
 #pragma pack(push, 8)
@@ -62,6 +69,10 @@ struct OmniRenderIPCFrameData {
     char     pixel_block_name[48];  // Named file mapping, resolution-unique ("Local\\OmniRender_GL_Pixels_<pid>_<w>x<h>"), empty = none
     uint32_t pixel_data_size;       // Total bytes in the mapping
     uint32_t pixel_row_pitch;       // Bytes per row (width * 4 for RGBA8)
+    // NEW v0.6.0 (3): CPU depth fallback channel (OpenGL without interop).
+    char     depth_block_name[48];  // Resolution-unique ("Local\\OmniRender_GL_Depth_<pid>_<w>x<h>"), empty = none
+    uint32_t depth_data_size;       // Total bytes in the mapping (w*h*4 for R32F)
+    uint32_t depth_row_pitch;       // Bytes per row (width * 4 for R32F)
 };
 #pragma pack(pop)
 
@@ -69,9 +80,11 @@ inline constexpr uint32_t kIpcMagic = 0x4F4D4E49; // "OMNI"
 
 // IPC struct version. 0 = v0.3.0-alpha (no motion, no VP, no jitter).
 // 1 = v0.4.0-alpha (full reprojection input). 2 = v0.5.0-alpha (pixel block).
+// 3 = v0.6.0-alpha (depth pixel block + real GL camera matrices).
 // Bump on every layout change.
 inline constexpr uint32_t kIpcVersion_V040 = 1;
 inline constexpr uint32_t kIpcVersion_V050 = 2;
+inline constexpr uint32_t kIpcVersion_V060 = 3;
 
 enum class IpcFlag : uint32_t {
     None         = 0,
@@ -79,6 +92,7 @@ enum class IpcFlag : uint32_t {
     DepthRaw     = 1u << 1,  // depth was not acquired / is unpopulated
     CameraZero   = 1u << 2,  // view_proj_current/previous are all-zero (not extracted)
     PixelDataCpu = 1u << 11, // color is CPU pixels in pixel_block_name (no GPU handle)
+    DepthDataCpu = 1u << 12, // depth is CPU pixels in depth_block_name (v0.6.0+)
 };
 
 // v0.3.0-alpha pipeline control bits travel in `flags` as well so the

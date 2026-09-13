@@ -20,6 +20,9 @@ either:
 - Real DXGI vtable hook: `IDXGISwapChain::Present` (lazy install).
 - Active depth capture with format-aware selection.
 - **OpenGL** capture — landed in v0.7.0-alpha. `opengl32.dll` proxy with `wglSwapBuffers` hook + `glReadPixels` backbuffer capture.
+- **OpenGL depth + camera matrices** — landed in v0.8.0-alpha. Depth rides a resolution-unique CPU shared block (`glReadPixels(GL_DEPTH_COMPONENT)`), camera `P*MV` comes from the fixed-function matrix stacks with derived near/far; shaders-only matrix games degrade to depth-only temporal.
+- **Real-game launcher** (`OmniRenderLaunch.exe`) — landed in v0.8.0-alpha. Drops hook proxies next to the game exe (backing up originals), starts the daemon, resumes the game suspended.
+- **F12 frame debugger for the runtime pipeline** — landed in v0.8.0-alpha. Final / linearized depth / motion / reactive / disocclusion / history views via `Pipeline::GetDebug*`.
 - ⏭ **D3D8** support via `d3d8to9` / `dgVoodoo2` — `0.7.0-alpha`.
 - ⏭ **Reactive mask** (particles, UI, transparency, fire, smoke, foliage) — `0.4.0-alpha`.
 - ⏭ **Disocclusion mask** — `0.4.0-alpha`.

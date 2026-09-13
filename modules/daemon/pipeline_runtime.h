@@ -6,6 +6,10 @@
 
 namespace omnirender::graphics { class IGraphicsTexture; }
 
+// D3D11 SRV forward declaration (composes with <d3d11.h> in any order;
+// same pattern as capture_adapter.h).
+struct ID3D11ShaderResourceView;
+
 namespace omnirender::daemon {
 
 // Initialize the runtime::Pipeline and its D3D11 graphics device wrapper.
@@ -35,5 +39,16 @@ void GetLastOutputResolution(uint32_t* width, uint32_t* height) noexcept;
 // pipeline ("NVIDIA DLSS", "Intel XeSS", "FSR 1.0 (EASU+RCAS)", or
 // "Passthrough"). The HUD shows this next to the input→output resolution.
 const char* GetActiveBackendName() noexcept;
+
+// F12 frame-debugger channel (0 = final output, 1..5 = pipeline views).
+// Returns a null SRV when the requested view has no data this frame; the
+// caller falls back to the pipeline output.
+ID3D11ShaderResourceView* GetRuntimeDebugSrv(int channel) noexcept;
+
+// Current debug channel (read back for the HUD label).
+int GetRuntimeDebugMode() noexcept;
+
+// Advance to the next debug channel; returns the new channel.
+int CycleRuntimeDebugMode() noexcept;
 
 }  // namespace omnirender::daemon

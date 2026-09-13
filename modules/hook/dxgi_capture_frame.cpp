@@ -84,11 +84,15 @@ void CaptureFrameDXGI(IDXGISwapChain* swap) {
     slot->payload.jitter_x            = jitter.x;
     slot->payload.jitter_y            = jitter.y;
     slot->payload.motion_format       = 34;  // DXGI_FORMAT_R16G16_FLOAT (0x22 is not RG16F)
-    slot->payload.struct_version      = omnirender::kIpcVersion_V050;
+    slot->payload.struct_version      = omnirender::kIpcVersion_V060;
     // No CPU pixel channel on the DXGI path (GPU shared handle only).
     slot->payload.pixel_block_name[0] = '\0';
     slot->payload.pixel_data_size     = 0;
     slot->payload.pixel_row_pitch     = 0;
+    // No CPU depth channel either (GPU shared handle only).
+    slot->payload.depth_block_name[0] = '\0';
+    slot->payload.depth_data_size     = 0;
+    slot->payload.depth_row_pitch     = 0;
 
     // Clear matrices before filling so partial writes leave known zeros.
     for (int i = 0; i < 16; ++i) {

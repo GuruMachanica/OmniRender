@@ -10,6 +10,26 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ### Added
+- **OpenGL depth + camera capture** — the GL hook now reads the current
+  depth buffer via `glReadPixels(GL_DEPTH_COMPONENT)` into a second
+  resolution-unique shared block (IPC v3: `depth_block_name`,
+  `IpcFlag::DepthDataCpu`), and publishes real `P*MV` camera matrices
+  (plus derived near/far) from the fixed-function matrix stacks. The
+  daemon uploads the depth block into an owned R32F texture, so the full
+  temporal chain (linearize → motion → disocclusion → reactive) now runs
+  on OpenGL games instead of color-only.
+- **OmniRenderLaunch.exe** (`tools/launcher/`) — one-command real-game
+  testing: drops the hook proxy DLLs next to the game executable (backing
+  up originals to `*.omnirender.bak`), writes a default `config.toml`,
+  starts the daemon with the game path (per-game config hashing), and
+  resumes the game. See `docs/real_game_testing.md`.
+- **F12 frame debugger for the runtime pipeline** — cycles
+  Final Output → Linearized Depth → Motion Vectors → Reactive Mask →
+  Disocclusion Mask → History Buffer, driven by new `Pipeline::GetDebug*`
+  accessors; the HUD shows the active channel.
+- **Real-game testing guide** (`docs/real_game_testing.md`) — per-stage
+  success criteria (passthrough → depth/motion → upscaling → 2-hour soak)
+  and a per-game compatibility-table template.
 - **Intel XeSS neural reconstruction backend for the runtime pipeline** —
   real `xessD3D11Init` + `xessD3D11Execute` through a dynamically loaded
   `libxess_dx11.dll` (`backends/reconstruction/xess/`), with the packed(8)

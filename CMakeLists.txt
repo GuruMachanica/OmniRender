@@ -58,6 +58,17 @@ if(OMNIRENDER_BUILD_UI)
     add_subdirectory(modules/ui)
 endif()
 
+# Real-game launcher: drops the hook proxies next to the game exe, backs up
+# originals, starts the daemon, then resumes the game. Windows-only tool.
+if(WIN32 AND (OMNIRENDER_BUILD_HOOK OR OMNIRENDER_BUILD_DAEMON))
+    add_executable(OmniRenderLaunch tools/launcher/OmniRenderLaunch.cpp)
+    target_compile_definitions(OmniRenderLaunch PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(OmniRenderLaunch PRIVATE /W4)
+    endif()
+    install(TARGETS OmniRenderLaunch RUNTIME DESTINATION bin)
+endif()
+
 if(OMNIRENDER_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -88,6 +99,17 @@ if(OMNIRENDER_BUILD_DAEMON)
         ARCHIVE DESTINATION lib)
 endif()
 install(DIRECTORY modules/shaders DESTINATION shaders)
+
+# Ship the hook proxy DLLs next to the launcher so OmniRenderLaunch.exe can
+# deploy them into game directories without a manual copy step.
+if(OMNIRENDER_BUILD_HOOK)
+    install(FILES
+        $<TARGET_FILE_DIR:omnirender-hook>/d3d9.dll
+        $<TARGET_FILE_DIR:omnirender-hook>/dxgi.dll
+        $<TARGET_FILE_DIR:omnirender-hook>/opengl32.dll
+        DESTINATION bin
+        OPTIONAL)
+endif()
 
 # Install extended pipeline docs so they ship with the source tree.
 install(FILES docs/pipeline_v0.3.md docs/roadmap_v0.3.md docs/3rd_party_deps.md

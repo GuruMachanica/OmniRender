@@ -102,7 +102,7 @@ void PublishFrame() {
     if (!slot) return;
 
     slot->payload.magic_header         = omnirender::kIpcMagic;
-    slot->payload.struct_version       = omnirender::kIpcVersion_V050;
+    slot->payload.struct_version       = omnirender::kIpcVersion_V060;
     slot->payload.frame_index          = g.frame_index;
     slot->payload.surface_width        = g.renderer.width;
     slot->payload.surface_height       = g.renderer.height;
@@ -123,6 +123,9 @@ void PublishFrame() {
     slot->payload.pixel_block_name[0]  = '\0';
     slot->payload.pixel_data_size      = 0;
     slot->payload.pixel_row_pitch      = 0;
+    slot->payload.depth_block_name[0]  = '\0';
+    slot->payload.depth_data_size      = 0;
+    slot->payload.depth_row_pitch      = 0;
 
     std::memcpy(slot->payload.view_proj_current, g.renderer.current_vp,
                 sizeof(slot->payload.view_proj_current));

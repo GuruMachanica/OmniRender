@@ -37,6 +37,10 @@ public:
 
     [[nodiscard]] bool IsGpuPathActive() const noexcept { return gpu_shader_ != nullptr; }
 
+    // Last written motion texture (RG16F, NDC motion). Invalid before the
+    // first successful Execute; used by the F12 frame debugger.
+    [[nodiscard]] const GpuTexture& GetOutput() const noexcept { return output_motion_; }
+
 private:
     PassResult ExecuteGpu(FrameContext& fc, graphics::ICommandContext& cmd);
     PassResult ExecuteCpu(FrameContext& fc, graphics::ICommandContext& cmd);

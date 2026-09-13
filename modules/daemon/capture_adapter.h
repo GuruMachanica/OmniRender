@@ -42,7 +42,7 @@ class CaptureAdapter {
 public:
     explicit CaptureAdapter(graphics::IGraphicsDevice& device) noexcept
         : device_(device) {}
-    ~CaptureAdapter() { ReleaseKeyedMutexIfHeld(); UnmapPixelBlock(); }
+    ~CaptureAdapter() { ReleaseKeyedMutexIfHeld(); UnmapPixelBlock(); UnmapDepthBlock(); }
 
     // Translate one IPC payload into a core::FrameContext.
     // The resulting GpuTextures are reference-counted; texture objects are
@@ -93,9 +93,20 @@ private:
     uint32_t pixel_tex_width_  = 0;
     uint32_t pixel_tex_height_ = 0;
 
+    // CPU depth fallback channel (OpenGL): same transport, R32F payload.
+    void*    depth_mapping_   = nullptr;
+    uint8_t* depth_view_      = nullptr;
+    std::string mapped_depth_name_;
+    std::shared_ptr<graphics::IGraphicsTexture> depth_upload_tex_;
+    uint32_t depth_tex_width_  = 0;
+    uint32_t depth_tex_height_ = 0;
+
     // Map the named pixel block for this frame, or reuse the existing view.
     [[nodiscard]] const uint8_t* MapPixelBlock(const OmniRenderIPCFrameData& p);
     void UnmapPixelBlock() noexcept;
+    // Same for the depth block.
+    [[nodiscard]] const uint8_t* MapDepthBlock(const OmniRenderIPCFrameData& p);
+    void UnmapDepthBlock() noexcept;
 };
 
 }  // namespace omnirender::daemon

@@ -42,6 +42,10 @@ public:
     // Threshold (in linearised depth units) beyond which a pixel is disoccluded.
     float depth_threshold = 0.02f;
 
+    // Last written disocclusion mask (R8). Invalid before the first
+    // successful Execute; used by the F12 frame debugger.
+    [[nodiscard]] const GpuTexture& GetOutput() const noexcept { return output_disocc_; }
+
 private:
     PassResult ExecuteGpu(FrameContext& fc, graphics::ICommandContext& cmd,
                           const GpuTexture& prev_depth, const GpuTexture& curr_depth);

@@ -152,6 +152,11 @@ std::shared_ptr<backends::IReconstructionBackend> g_core_xess;
 std::string g_active_backend_name = "Passthrough";
 void SetActiveBackendName(const char* name) { g_active_backend_name = name; }
 
+// F12 frame-debugger channel for the runtime pipeline (0 = final output,
+// 1..5 = depth/motion/reactive/disocclusion/history). presentation_win
+// cycles it via CycleRuntimeDebugMode().
+int g_rt_debug_mode = 0;
+
 // Attach the best available backend that can actually execute (issue #3).
 // Returns true if a functional backend was attached.
 bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
@@ -347,8 +352,40 @@ int NewPipelineFrame(FrameSlot& slot) {
     return ok ? 0 : -1;
 }
 
+// Cycle the runtime frame-debugger view. 0 = final output, 1..5 = the
+// pipeline's intermediate views. Channels whose pass has not produced data
+// present as the final output (GetRuntimeDebugSrv returns null for them).
+int CycleRuntimeDebugMode() noexcept {
+    g_rt_debug_mode = (g_rt_debug_mode + 1) % 6;
+    static constexpr const char* kNames[] = {
+        "Final Output", "Linearized Depth", "Motion Vectors",
+        "Reactive Mask", "Disocclusion Mask", "History Buffer" };
+    OMNI_LOG_INFO("Frame Debugger (runtime): channel %d (%s)",
+                  g_rt_debug_mode, kNames[g_rt_debug_mode]);
+    return g_rt_debug_mode;
+}
+
 const char* GetActiveBackendName() noexcept {
     return g_active_backend_name.c_str();
+}
+
+// F12 frame-debugger channel -> live pipeline texture. The runtime pipeline
+// owns these views; the legacy g_debug_mode machinery only covers the old
+// processing path.
+int GetRuntimeDebugMode() noexcept { return g_rt_debug_mode; }
+ID3D11ShaderResourceView* GetRuntimeDebugSrv(int channel) noexcept {
+    if (!g_rt_pipeline) return nullptr;
+    core::GpuTexture tex;
+    switch (channel) {
+        case 1: tex = g_rt_pipeline->GetDebugDepthLinear();  break;
+        case 2: tex = g_rt_pipeline->GetDebugMotion();       break;
+        case 3: tex = g_rt_pipeline->GetDebugReactive();     break;
+        case 4: tex = g_rt_pipeline->GetDebugDisocclusion(); break;
+        case 5: tex = g_rt_pipeline->GetDebugHistory();      break;
+        default: return nullptr;  // 0 = final output (presented anyway)
+    }
+    if (!tex.IsValid() || !tex.Get()->GetNativeSrv()) return nullptr;
+    return static_cast<ID3D11ShaderResourceView*>(tex.Get()->GetNativeSrv());
 }
 
 graphics::IGraphicsTexture* GetLastOutputTexture() noexcept {

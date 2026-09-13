@@ -60,12 +60,15 @@ CaptureAdapter::GetOrOpen(uint64_t handle, CachedTexture& cache) {
     return tex;
 }
 
-void CaptureAdapter::InvalidateCache() noexcept {
+void CaptureAdapter::    InvalidateCache() noexcept {
     color_cache_ = {};
     depth_cache_ = {};
     UnmapPixelBlock();
     pixel_upload_tex_.reset();
     pixel_tex_width_ = pixel_tex_height_ = 0;
+    UnmapDepthBlock();
+    depth_upload_tex_.reset();
+    depth_tex_width_ = depth_tex_height_ = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +118,49 @@ void CaptureAdapter::UnmapPixelBlock() noexcept {
     }
 }
 
+const uint8_t* CaptureAdapter::MapDepthBlock(const OmniRenderIPCFrameData& p) {
+    if (p.struct_version < omnirender::kIpcVersion_V060) return nullptr;
+    if (p.depth_block_name[0] == '\0' || p.depth_data_size == 0) return nullptr;
+
+    // Resolution-unique name policy (same as the color block): remap when
+    // the hook publishes a new section after a game resize.
+    if (depth_mapping_ && depth_view_ && mapped_depth_name_ == p.depth_block_name) {
+        return depth_view_;
+    }
+    UnmapDepthBlock();
+
+    depth_mapping_ = ::OpenFileMappingA(FILE_MAP_READ, FALSE, p.depth_block_name);
+    if (!depth_mapping_) {
+        OMNI_LOG_WARN("CaptureAdapter: OpenFileMappingA(%s) failed: %lu",
+                      p.depth_block_name, ::GetLastError());
+        return nullptr;
+    }
+    depth_view_ = static_cast<uint8_t*>(::MapViewOfFile(
+        depth_mapping_, FILE_MAP_READ, 0, 0, p.depth_data_size));
+    if (!depth_view_) {
+        OMNI_LOG_WARN("CaptureAdapter: MapViewOfFile(depth block) failed: %lu", ::GetLastError());
+        ::CloseHandle(depth_mapping_);
+        depth_mapping_ = nullptr;
+        return nullptr;
+    }
+    OMNI_LOG_INFO("CaptureAdapter: GL depth block mapped (%s, %u bytes)",
+                  p.depth_block_name, p.depth_data_size);
+    mapped_depth_name_ = p.depth_block_name;
+    return depth_view_;
+}
+
+void CaptureAdapter::UnmapDepthBlock() noexcept {
+    if (depth_view_) {
+        ::UnmapViewOfFile(depth_view_);
+        depth_view_ = nullptr;
+    }
+    mapped_depth_name_.clear();
+    if (depth_mapping_) {
+        ::CloseHandle(depth_mapping_);
+        depth_mapping_ = nullptr;
+    }
+}
+
 // Upload CPU pixels into an owned BGRA8 texture (recreated on resize).
 static std::shared_ptr<graphics::IGraphicsTexture>
 EnsurePixelUploadTexture(graphics::IGraphicsDevice& device,
@@ -129,6 +175,25 @@ EnsurePixelUploadTexture(graphics::IGraphicsDevice& device,
             core::TextureUsage::ShaderResource | core::TextureUsage::RenderTarget |
             core::TextureUsage::TransferDst | core::TextureUsage::TransferSrc,
             "GLCpuPixelColor" };
+        tex = device.CreateTexture(desc);
+        tex_w = tex ? width : 0;
+        tex_h = tex ? height : 0;
+    }
+    return tex;
+}
+
+// Same for the CPU depth channel: an owned R32F texture fed by the GL depth
+// block (window depth [0,1], standard GL near=0/far=1 convention).
+static std::shared_ptr<graphics::IGraphicsTexture>
+EnsureDepthUploadTexture(graphics::IGraphicsDevice& device,
+                         std::shared_ptr<graphics::IGraphicsTexture>& tex,
+                         uint32_t& tex_w, uint32_t& tex_h,
+                         uint32_t width, uint32_t height) {
+    if (!tex || tex_w != width || tex_h != height) {
+        core::TextureDesc desc{ width, height, 1, core::TextureFormat::R32_FLOAT,
+            core::TextureUsage::ShaderResource | core::TextureUsage::TransferDst |
+            core::TextureUsage::TransferSrc,
+            "GLCpuPixelDepth" };
         tex = device.CreateTexture(desc);
         tex_w = tex ? width : 0;
         tex_h = tex ? height : 0;
@@ -241,6 +306,33 @@ FrameContext CaptureAdapter::Adapt(const OmniRenderIPCFrameData& p) {
     } else if (p.shared_color_handle) {
         OMNI_LOG_WARN("CaptureAdapter: OpenSharedTexture(color) failed (frame %llu)",
                       p.frame_index);
+    }
+
+    // --- Depth texture (CPU fallback channel, OpenGL) -----------------------
+    // Consumed only when no GPU depth handle exists; the block carries raw
+    // window depth [0,1] which is exactly what DepthProvider linearizes.
+    const bool depth_cpu = (p.struct_version >= omnirender::kIpcVersion_V060) &&
+                           (p.flags & static_cast<uint32_t>(IpcFlag::DepthDataCpu)) != 0;
+    if (!fc.validity.depth_valid && depth_cpu &&
+        fc.input_resolution.width > 0 && fc.input_resolution.height > 0) {
+        if (const uint8_t* depth_px = MapDepthBlock(p)) {
+            auto d_tex = EnsureDepthUploadTexture(device_, depth_upload_tex_,
+                                                  depth_tex_width_, depth_tex_height_,
+                                                  fc.input_resolution.width,
+                                                  fc.input_resolution.height);
+            auto ctx = device_.GetImmediateContext();
+            if (d_tex && ctx) {
+                ctx->UploadTextureData(d_tex.get(), depth_px, p.depth_row_pitch);
+                fc.depth = core::GpuTexture(d_tex);
+                fc.validity.depth_valid = true;
+                // GL window depth is near=0/far=1 — standard forward Z. The
+                // hook publishes the real P matrix, so ReversedZ stays unset;
+                // DepthProvider linearizes against fc.camera near/far.
+            } else {
+                OMNI_LOG_WARN("CaptureAdapter: CPU depth upload failed (frame %llu)",
+                              p.frame_index);
+            }
+        }
     }
 
     // --- Depth texture (cached import, skip if DepthRaw flag set) ----------

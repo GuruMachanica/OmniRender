@@ -39,6 +39,10 @@ public:
     // Pixels whose luminance delta exceeds this are marked reactive.
     float luminance_threshold = 0.15f;
 
+    // Last written reactive mask (R8). Invalid before the first successful
+    // Execute; used by the F12 frame debugger.
+    [[nodiscard]] const GpuTexture& GetOutput() const noexcept { return output_reactive_; }
+
 private:
     PassResult ExecuteGpu(FrameContext& fc, graphics::ICommandContext& cmd,
                           const GpuTexture& history_color);

@@ -32,16 +32,11 @@ HANDLE                  g_frame_latency_waitable = nullptr;
 std::atomic<bool>       g_running                { true };
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (msg == WM_KEYDOWN) {
-        if (wp == VK_F11) {
-            ToggleHudVisibility();
-            return 0;
-        }
-        if (wp == VK_F12) {
-            CycleDebugMode();
-            return 0;
-        }
-    }
+    // Hotkeys (F11 HUD, F12 debug view) are polled globally with
+    // GetAsyncKeyState in the presentation loop so they work while the game
+    // — not this overlay — has keyboard focus. Handling WM_KEYDOWN here too
+    // would double-cycle the debug channel whenever the overlay itself is
+    // focused.
     if (msg == WM_DESTROY || msg == WM_CLOSE) {
         g_running.store(false, std::memory_order_release);
         PostQuitMessage(0);
@@ -165,7 +160,11 @@ int RunPresentationLoop() {
         if (!g_running.load(std::memory_order_acquire)) break;
 
         if (GetAsyncKeyState(VK_F11) & 0x0001) ToggleHudVisibility();
+#ifdef OMNIRENDER_LEGACY_PIPELINE
         if (GetAsyncKeyState(VK_F12) & 0x0001) CycleDebugMode();
+#else
+        if (GetAsyncKeyState(VK_F12) & 0x0001) CycleRuntimeDebugMode();
+#endif
 
         omnirender::FrameSlot* slot = nullptr;
         if (ConsumeFrame(slot) && slot) {
@@ -215,10 +214,16 @@ int RunPresentationLoop() {
 
             if (out_tex && out_tex->GetNativeSrv()) {
                 // Blit reconstructed output at its native (upscaled) size.
+                // F12 frame debugger: when a debug channel is active and has
+                // data, present it instead of the final frame (the letterboxed
+                // blit handles the resolution difference).
                 ID3D11ShaderResourceView* srv =
                     static_cast<ID3D11ShaderResourceView*>(out_tex->GetNativeSrv());
-                BlitFrame(srv, static_cast<UINT>(last_width),
-                               static_cast<UINT>(last_height));
+                ID3D11ShaderResourceView* dbg =
+                    GetRuntimeDebugSrv(GetRuntimeDebugMode());
+                BlitFrame(dbg ? dbg : srv,
+                          static_cast<UINT>(last_width),
+                          static_cast<UINT>(last_height));
             } else {
                 RunPassthroughFrame(*slot);
             }
@@ -281,6 +286,17 @@ int RunPresentationLoop() {
                     hs += std::to_string(out_h);
                 }
                 hs += "\n";
+#ifndef OMNIRENDER_LEGACY_PIPELINE
+                const int dbg = GetRuntimeDebugMode();
+                if (dbg != 0) {
+                    static constexpr const char* kDbgNames[] = {
+                        "Final Output", "Linearized Depth", "Motion Vectors",
+                        "Reactive Mask", "Disocclusion Mask", "History Buffer" };
+                    hs += "Debug view:     ";
+                    hs += kDbgNames[dbg];
+                    hs += "\n";
+                }
+#endif
                 RenderHudOverlay(Context(), hs, 16, 16, (int)last_width, (int)last_height);
             }
 

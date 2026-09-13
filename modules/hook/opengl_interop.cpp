@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <cmath>
 #include <cstring>
 #include <GL/gl.h>
 
@@ -64,6 +65,17 @@ uint8_t*             g_pixel_data      = nullptr;
 uint32_t             g_pixel_capacity  = 0;
 std::string          g_pixel_block_name;
 std::vector<uint8_t> g_staging_pixels;
+
+// Depth capture channel (see CaptureGLDepthCpu in the header).
+HANDLE               g_depth_mapping   = nullptr;
+float*               g_depth_data      = nullptr;
+uint32_t             g_depth_capacity  = 0;
+std::string          g_depth_block_name;
+std::vector<float>   g_depth_staging;
+
+// Camera matrix channel (see QueryGLCameraMatrices in the header).
+float                g_prev_view_proj[16] = {};
+bool                 g_have_prev_vp       = false;
 
 bool ResolveWGLExtensions() {
     g_wglDXOpenDeviceNV = reinterpret_cast<PFNWGLDXOPENDEVICENVPROC>(
@@ -181,6 +193,8 @@ bool InitializeGLInterop(HDC, int width, int height) {
 
 void ShutdownGLInterop() {
     ShutdownGLPixelBlock();
+    ShutdownGLDepthBlock();
+    g_have_prev_vp = false;
     if (g_interop_device && g_interop_object && g_wglDXUnregisterObjectNV) {
         g_wglDXUnregisterObjectNV(g_interop_device, g_interop_object);
         g_interop_object = nullptr;
@@ -308,6 +322,158 @@ void ShutdownGLPixelBlock() {
     g_pixel_block_name.clear();
     g_staging_pixels.clear();
     g_staging_pixels.shrink_to_fit();
+}
+
+bool CaptureGLDepthCpu(int width, int height,
+                       const char** out_block_name,
+                       uint32_t* out_data_size,
+                       uint32_t* out_row_pitch) {
+    if (width <= 0 || height <= 0 || !out_block_name || !out_data_size || !out_row_pitch) {
+        return false;
+    }
+
+    const uint32_t w = static_cast<uint32_t>(width);
+    const uint32_t h = static_cast<uint32_t>(height);
+    const uint32_t pitch = w * 4u;                       // R32F
+    const uint32_t total = pitch * h;
+
+    // Resolution-unique section, same policy as the color block: never
+    // recreate under a name the daemon may still hold a view of.
+    if (g_depth_mapping && (g_width != width || g_height != height)) {
+        ShutdownGLDepthBlock();
+    }
+    if (!g_depth_mapping) {
+        g_depth_block_name = std::string("Local\\OmniRender_GL_Depth_")
+                             + std::to_string(::GetCurrentProcessId())
+                             + "_" + std::to_string(w)
+                             + "x" + std::to_string(h);
+        g_depth_mapping = ::CreateFileMappingA(
+            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, total,
+            g_depth_block_name.c_str());
+        if (!g_depth_mapping) {
+            OMNI_LOG_ERROR("GL depth capture: CreateFileMappingA failed: %lu", ::GetLastError());
+            g_depth_block_name.clear();
+            return false;
+        }
+        g_depth_data = static_cast<float*>(::MapViewOfFile(
+            g_depth_mapping, FILE_MAP_ALL_ACCESS, 0, 0, total));
+        if (!g_depth_data) {
+            OMNI_LOG_ERROR("GL depth capture: MapViewOfFile failed: %lu", ::GetLastError());
+            ::CloseHandle(g_depth_mapping);
+            g_depth_mapping = nullptr;
+            g_depth_block_name.clear();
+            return false;
+        }
+        g_depth_capacity = total;
+        OMNI_LOG_INFO("GL depth capture: shared depth block ready (%s, %ux%u)",
+                      g_depth_block_name.c_str(), w, h);
+    }
+
+    // Read the current depth buffer as normalized window depth [0,1]. Games
+    // without a depth buffer (pure 2D) fail the GL error check and publish
+    // nothing — DepthRaw semantics, no fabricated data.
+    const size_t need_px = static_cast<size_t>(w) * h;
+    if (g_depth_staging.size() < need_px) g_depth_staging.resize(need_px);
+    while (::glGetError() != GL_NO_ERROR) {}  // clear sticky errors
+    ::glReadPixels(0, 0, width, height, GL_DEPTH_COMPONENT, GL_FLOAT,
+                   g_depth_staging.data());
+    if (::glGetError() != GL_NO_ERROR) {
+        return false;
+    }
+
+    // GL returns rows bottom-up; IPC consumers expect top-down frames.
+    for (uint32_t y = 0; y < h; ++y) {
+        std::memcpy(g_depth_data + static_cast<size_t>(y) * w,
+                    g_depth_staging.data() + static_cast<size_t>(h - 1 - y) * w,
+                    static_cast<size_t>(w) * sizeof(float));
+    }
+
+    *out_block_name = g_depth_block_name.c_str();
+    *out_data_size  = total;
+    *out_row_pitch  = pitch;
+    return true;
+}
+
+void ShutdownGLDepthBlock() {
+    if (g_depth_data) {
+        ::UnmapViewOfFile(g_depth_data);
+        g_depth_data = nullptr;
+    }
+    if (g_depth_mapping) {
+        ::CloseHandle(g_depth_mapping);
+        g_depth_mapping = nullptr;
+    }
+    g_depth_capacity = 0;
+    g_depth_block_name.clear();
+    g_depth_staging.clear();
+    g_depth_staging.shrink_to_fit();
+}
+
+bool QueryGLCameraMatrices(float out_view_proj[16], float out_prev_view_proj[16],
+                           float* out_near, float* out_far) {
+    if (!out_view_proj || !out_prev_view_proj || !out_near || !out_far) return false;
+
+    float mv[16]   = {};
+    float proj[16] = {};
+    ::glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    ::glGetFloatv(GL_PROJECTION_MATRIX, proj);
+
+    // view_proj = P * MV. GL stores column-major float[16] with element
+    // m[col*4 + row]; the daemon's FrameContext camera uses the identical
+    // convention (TemporalPassBase::TransformPoint walks m[c*4+r]), so the
+    // product is published byte-for-byte without any transpose.
+    float vp[16] = {};
+    for (int c = 0; c < 4; ++c) {
+        for (int r = 0; r < 4; ++r) {
+            float acc = 0.0f;
+            for (int k = 0; k < 4; ++k) {
+                acc += proj[k * 4 + r] * mv[c * 4 + k];
+            }
+            vp[c * 4 + r] = acc;
+        }
+    }
+
+    bool finite = true;
+    for (int i = 0; i < 16; ++i) {
+        if (!std::isfinite(vp[i])) { finite = false; break; }
+    }
+    if (!finite) return false;
+
+    // Previous frame's product: first call publishes the current product in
+    // both slots (stationary-camera reprojection produces zero motion, which
+    // is correct) and thereafter the last frame's value.
+    if (g_have_prev_vp) {
+        std::memcpy(out_prev_view_proj, g_prev_view_proj, 16 * sizeof(float));
+    } else {
+        std::memcpy(out_prev_view_proj, vp, 16 * sizeof(float));
+        g_have_prev_vp = true;
+    }
+    std::memcpy(out_view_proj, vp, 16 * sizeof(float));
+    std::memcpy(g_prev_view_proj, vp, 16 * sizeof(float));
+
+    // near/far from the standard OpenGL perspective projection:
+    //   proj[10] = -(f+n)/(f-n),  proj[14] = -2fn/(f-n)
+    // => n = b/(a-1), f = n*(a-1)/(a+1). For any f > n > 0, |a| is strictly
+    // greater than 1 (e.g. -1.0002 for n=0.1/f=1000), so |a| <= 1 or a
+    // degenerate a+1 == 0 means orthographic/odd projections — fall back to
+    // conservative defaults; the values only parameterize linearization,
+    // they do not gate validity.
+    const float a = proj[10];
+    const float b = proj[14];
+    float near_z = 0.1f, far_z = 1000.0f;
+    if (std::isfinite(a) && std::isfinite(b) &&
+        std::abs(a) > 1.0f && std::abs(a + 1.0f) > 1e-6f) {
+        const float n_derived = b / (a - 1.0f);
+        const float f_derived = n_derived * (a - 1.0f) / (a + 1.0f);
+        if (std::isfinite(n_derived) && n_derived > 0.0f &&
+            std::isfinite(f_derived) && f_derived > n_derived) {
+            near_z = n_derived;
+            far_z  = f_derived;
+        }
+    }
+    *out_near = near_z;
+    *out_far  = far_z;
+    return true;
 }
 
 bool IsGLInteropActive() {

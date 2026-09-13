@@ -45,6 +45,17 @@ public:
     bool ExecuteFrame(core::FrameContext& frame_ctx, graphics::ICommandContext& cmd_ctx);
 
     [[nodiscard]] core::HistoryManager& GetHistoryManager() noexcept { return history_mgr_; }
+
+    // F12 frame-debugger views. Each returns the pass's last written texture
+    // (invalid GpuTexture when the pass has not run or is disabled). Returned
+    // by value — HistoryManager::GetCurrentHistoryTexture() is itself a
+    // by-value API, and GpuTexture is a cheap shared_ptr wrapper.
+    [[nodiscard]] core::GpuTexture GetDebugDepthLinear() const noexcept { return depth_provider_.GetLinearDepth(); }
+    [[nodiscard]] core::GpuTexture GetDebugMotion() const noexcept { return motion_pass_.GetOutput(); }
+    [[nodiscard]] core::GpuTexture GetDebugReactive() const noexcept { return reactive_pass_.GetOutput(); }
+    [[nodiscard]] core::GpuTexture GetDebugDisocclusion() const noexcept { return disocclusion_pass_.GetOutput(); }
+    [[nodiscard]] core::GpuTexture GetDebugHistory() const noexcept { return history_mgr_.GetCurrentHistoryTexture(); }
+
     void OnDeviceLost();
     bool OnDeviceRestored(graphics::IGraphicsDevice& device);
 

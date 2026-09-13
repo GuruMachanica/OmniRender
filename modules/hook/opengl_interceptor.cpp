@@ -15,7 +15,6 @@
 
 #include "opengl_interop.h"
 #include "wgl_thunk.h"
-#include "../common/halton.h"
 #include "../common/ipc_protocol.h"
 #include "../common/logging.h"
 #include "../common/ring_buffer.h"
@@ -70,7 +69,7 @@ void PublishGLFrame(int width, int height, HANDLE shared_color_handle,
     omnirender::FrameSlot* slot = &g_ring->slots[slot_idx];
 
     slot->payload.magic_header         = omnirender::kIpcMagic;
-    slot->payload.struct_version       = omnirender::kIpcVersion_V050;
+    slot->payload.struct_version       = omnirender::kIpcVersion_V060;
     slot->payload.frame_index          = p_seq + 1;
     slot->payload.surface_width        = static_cast<uint32_t>(width);
     slot->payload.surface_height       = static_cast<uint32_t>(height);
@@ -80,7 +79,7 @@ void PublishGLFrame(int width, int height, HANDLE shared_color_handle,
     // zero-copy interop shares a true BGRA8 D3D11 texture (87);
     // the CPU pixel block holds RGBA byte order from glReadPixels (28).
     slot->payload.color_format         = (shared_color_handle != nullptr) ? 87 : 28;
-    slot->payload.depth_format         = 0;   // no GL depth capture yet (planned)
+    slot->payload.depth_format         = 0;   // set to R32F (41) below when depth capture succeeds
     slot->payload.motion_format        = 0;
     slot->payload.shared_color_handle  = reinterpret_cast<uint64_t>(shared_color_handle);
     slot->payload.shared_depth_handle  = 0;
@@ -99,14 +98,31 @@ void PublishGLFrame(int width, int height, HANDLE shared_color_handle,
     slot->payload.camera_near          = 0.1f;
     slot->payload.camera_far           = 1000.0f;
     slot->payload.fov_vertical_rad     = 1.0471975512f;
+    slot->payload.depth_block_name[0]  = '\0';
+    slot->payload.depth_data_size      = 0;
+    slot->payload.depth_row_pitch      = 0;
 
-    omnirender::Halton23 jitter        = omnirender::Halton23At(slot->payload.frame_index);
-    slot->payload.jitter_x             = jitter.x;
-    slot->payload.jitter_y             = jitter.y;
-    for (int i = 0; i < 16; ++i) {
-        slot->payload.view_proj_current[i]  = 0.0f;
-        slot->payload.view_proj_previous[i] = 0.0f;
+    // Real camera matrices: read P*MV from the live context. Games using
+    // exotic matrix stacks still publish something finite; the daemon's
+    // ValidateCameraMatrix rejects degenerate values and falls back to
+    // depth-heuristic motion.
+    float vp[16] = {}, prev_vp[16] = {};
+    float near_z = 0.1f, far_z = 1000.0f;
+    if (QueryGLCameraMatrices(vp, prev_vp, &near_z, &far_z)) {
+        std::memcpy(slot->payload.view_proj_current,  vp,      sizeof(vp));
+        std::memcpy(slot->payload.view_proj_previous, prev_vp, sizeof(prev_vp));
+        slot->payload.camera_near = near_z;
+        slot->payload.camera_far  = far_z;
     }
+
+    // No synthetic jitter: GL games rasterize unjittered frames and
+    // OmniRender does not inject jitter into them. Publishing fabricated
+    // Halton offsets would make temporal reconstruction smear against the
+    // real (unjittered) raster. Reprojection uses the real P*MV matrices
+    // queried from the context instead (filled above; the daemon's
+    // CameraZero/ValidateCameraMatrix path handles unusable values).
+    slot->payload.jitter_x             = 0.0f;
+    slot->payload.jitter_y             = 0.0f;
     // Flag semantics must use the shared IpcFlag enum: 0x01 previously
     // collided with IpcFlag::ReversedZ and made the daemon flip depth
     // interpretation for no reason.
@@ -119,6 +135,22 @@ void PublishGLFrame(int width, int height, HANDLE shared_color_handle,
         // No interop AND no pixel block: nothing to consume.
         omnirender::SetState(*slot, omnirender::SlotState::Free);
         return;
+    }
+
+    // Depth channel: read the live depth buffer when the color path went
+    // through the CPU fallback. Zero-copy interop shares only color today;
+    // depth still flows through the CPU block in that case.
+    {
+        const char* depth_block = nullptr;
+        uint32_t    depth_size = 0, depth_pitch = 0;
+        if (CaptureGLDepthCpu(width, height, &depth_block, &depth_size, &depth_pitch)) {
+            ::strncpy_s(slot->payload.depth_block_name, depth_block,
+                        sizeof(slot->payload.depth_block_name) - 1);
+            slot->payload.depth_data_size = depth_size;
+            slot->payload.depth_row_pitch = depth_pitch;
+            slot->payload.depth_format    = 41;  // DXGI_FORMAT_R32_FLOAT
+            gl_flags |= static_cast<uint32_t>(omnirender::IpcFlag::DepthDataCpu);
+        }
     }
     slot->payload.flags = gl_flags;
 

@@ -195,7 +195,7 @@ void CaptureD3D9Frame(IDirect3DDevice9* device) {
     D3DSURFACE_DESC desc{};
     g_shared_color->GetDesc(&desc);
     slot->payload.magic_header         = omnirender::kIpcMagic;
-    slot->payload.struct_version       = omnirender::kIpcVersion_V050;
+    slot->payload.struct_version       = omnirender::kIpcVersion_V060;
     slot->payload.frame_index          = p_seq + 1;
     slot->payload.surface_width        = desc.Width;
     slot->payload.surface_height       = desc.Height;
@@ -228,6 +228,10 @@ void CaptureD3D9Frame(IDirect3DDevice9* device) {
     slot->payload.pixel_block_name[0]  = '\0';
     slot->payload.pixel_data_size      = 0;
     slot->payload.pixel_row_pitch      = 0;
+    // No CPU depth channel either (GPU shared handle only).
+    slot->payload.depth_block_name[0]  = '\0';
+    slot->payload.depth_data_size      = 0;
+    slot->payload.depth_row_pitch      = 0;
 
     static float s_prev_vp[16] = {};
     D3DMATRIX view{}, proj{}, vp{};
