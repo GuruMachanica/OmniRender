@@ -117,7 +117,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     omnirender::config::g_enable_xess =
         cfg.GetBool("pipeline.enable_xess", false);
     omnirender::config::g_enable_fsr =
-        cfg.GetBool("pipeline.enable_fsr", false);
+        cfg.GetBool("pipeline.enable_fsr", true);  // vendor-neutral fallback, on by default
     omnirender::config::g_enable_rt_effects =
         cfg.GetBool("pipeline.enable_rt_effects", false);
 
@@ -126,9 +126,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     omnirender::config::g_output_scale_mode =
         cfg.GetString("renderer.output_scale", "screen");
     omnirender::config::g_output_width = static_cast<UINT>(
-        cfg.GetInt("renderer.output_width", 1920));
+        cfg.GetInt("renderer.output_width", 2560));
     omnirender::config::g_output_height = static_cast<UINT>(
-        cfg.GetInt("renderer.output_height", 1080));
+        cfg.GetInt("renderer.output_height", 1440));
+    omnirender::config::g_sharpen = static_cast<float>(
+        cfg.GetFloat("renderer.sharpen", 0.75));
 
     omnirender::config::g_max_work_width =
         static_cast<UINT>(cfg.GetInt("pipeline.max_work_width",

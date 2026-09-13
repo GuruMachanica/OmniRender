@@ -32,6 +32,7 @@ either:
 - Bounded working resolution, history ping-pong, work UAV, constants buffer.
 - Compute-shader linearize / reconstruct / tonemap entry points.
 - **Depth + camera reprojection** motion vectors — landed in v0.4.0-alpha. Use depth + camera intrinsics before falling back to optical flow (audit #20).
+- **Optical flow fallback** — landed in v0.8.0-alpha (`core/temporal/OpticalFlowPass` + `shaders/temporal/OpticalFlow.hlsl`): bounded ±8 px luma block-search against committed history, same NDC current→previous convention as reprojection, runs only when reprojection cannot (DXGI games without engine matrices, shaders-only GL games).
 - **Halton 2,3 jitter** sequence — landed in v0.4.0-alpha.
 - ⏭ **Optical flow** (NVIDIA Optical Flow SDK or DIS compute) — `0.5.0-alpha`.
 

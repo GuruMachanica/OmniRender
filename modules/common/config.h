@@ -146,6 +146,10 @@ inline std::string g_output_scale_mode   = "screen";
 inline UINT         g_output_width       = 1920;  // "custom" mode only
 inline UINT         g_output_height      = 1080;
 
+// RCAS sharpening strength for the FSR spatial backend, [0, 1]. Consumed
+// when the spatial backend is attached (renderer.sharpen).
+inline float        g_sharpen            = 0.75f;
+
 // Working-resolution ceiling (pixels). The pipeline clamps the input
 // frame down to this size before any history-keeping pass so the
 // total VRAM footprint stays bounded. Profiles may override per

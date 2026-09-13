@@ -173,10 +173,12 @@ PassResult MotionReprojectionPass::ExecuteCpu(FrameContext& fc,
                 continue;
             float invPw = 1.0f / pw2;
 
-            // Pack as RG16F (2 x fp16 per pixel).
+            // Pack as RG16F (2 x fp16 per pixel). Sign convention:
+            // previous NDC - current NDC (current -> previous), matching the
+            // GPU shader, NVIDIA DLSS, and Intel XeSS contracts.
             size_t idx = (static_cast<size_t>(py) * W + px) * 2;
-            cpu_pixels_[idx + 0] = FloatToHalf(ndcX - px2 * invPw);
-            cpu_pixels_[idx + 1] = FloatToHalf(ndcY - py2 * invPw);
+            cpu_pixels_[idx + 0] = FloatToHalf(px2 * invPw - ndcX);
+            cpu_pixels_[idx + 1] = FloatToHalf(py2 * invPw - ndcY);
         }
     }
 

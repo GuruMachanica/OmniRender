@@ -234,7 +234,11 @@ bool XessAdapter::EnsureFeature(uint32_t input_w, uint32_t input_h,
     // (Execute passes exposure_scale = 1.0).
     // No INVERTED_DEPTH: linearized depth has near = 0 (smaller = closer,
     // XeSS's default convention).
-    init.init_flags        = 1u << 6;  // XESS_INIT_FLAG_LDR_INPUT_COLOR
+    // XESS_INIT_FLAG_LDR_INPUT_COLOR (1<<6): tonemapped UNORM backbuffer
+    // input. XESS_INIT_FLAG_USE_NDC_VELOCITY (1<<4): the motion passes emit
+    // NDC-unit vectors (Intel's default unit is pixels — without this flag
+    // motion would read ~1000x too small and ghost).
+    init.init_flags        = (1u << 6) | (1u << 4);
 
     const int rc = pfn_xessInit(xess_context_, &init);
     if (rc != kXessResultSuccess) {
@@ -282,11 +286,11 @@ bool XessAdapter::Execute(FrameContext& ctx) {
         return false;
     }
 
-    // Motion-vector contract (Intel SR guide): XeSS expects screen-space
-    // motion in PIXELS, current frame -> previous frame, default velocity
-    // scale 1.0 = pixels. That is exactly the MV producer's convention
-    // (docs/ipc.md: pixels-per-frame, current->previous), so no
-    // xessSetVelocityScale call is needed. Jitter is passed in [-0.5, 0.5].
+    // Motion-vector contract (Intel SR guide): XeSS's default velocity unit
+    // is PIXELS from the current frame to the previous frame. The motion
+    // passes emit NDC-unit vectors in that same direction, so the context is
+    // initialized with XESS_INIT_FLAG_USE_NDC_VELOCITY and no velocity scale
+    // is needed (default 1.0). Jitter is passed in [-0.5, 0.5].
 
     // Output texture: target-resolution R8G8B8A8, created once per resolution
     // pair and owned by the adapter (released in Shutdown via UnloadLibraries).

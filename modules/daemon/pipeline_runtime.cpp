@@ -203,7 +203,7 @@ bool AttachBackend(const core::Resolution& in, const core::Resolution& out) {
     // (and on NVIDIA boxes where NGX is absent).
     if (omnirender::config::g_enable_upscale && omnirender::config::g_enable_fsr) {
         auto spatial = std::make_shared<backends::spatial::SpatialUpscaleBackend>();
-        spatial->SetSharpness(0.75f);
+        spatial->SetSharpness(omnirender::config::g_sharpen);
         // Pipeline::SetReconstructionBackend runs Initialize(*device, in, out)
         // and drops the backend on failure, mirroring the DLSS attach above.
         g_rt_pipeline->SetReconstructionBackend(spatial);

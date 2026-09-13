@@ -10,6 +10,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ### Added
+- **Optical flow fallback motion source** — new
+  `core::temporal::OpticalFlowPass` (compute shader + CPU fallback) fills
+  motion vectors when depth+camera reprojection cannot: DXGI (D3D10/11)
+  games publish no view_proj matrices, and shaders-only GL games never
+  touch the fixed-function stacks. Bounded ±8 px luma block-search against
+  the committed history, static-pixel early-out, history-res mapping so it
+  works with upscaling active. Per audit #20 this is strictly a fallback:
+  the pass skips whenever reprojection already produced motion.
+- **Compatibility database** (`docs/compatibility.md`) — community
+  template for per-game results with engine-specific gotchas.
 - **OpenGL depth + camera capture** — the GL hook now reads the current
   depth buffer via `glReadPixels(GL_DEPTH_COMPONENT)` into a second
   resolution-unique shared block (IPC v3: `depth_block_name`,
@@ -103,6 +113,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   exported) and installs them under `bin/proxies/`.
 
 ### Fixed
+- **Motion-vector sign convention unified to current→previous** — the
+  core `MotionReproject.hlsl` (and its CPU fallback) emitted
+  previous→current while DLSS and XeSS both contract current→previous
+  (NVIDIA: "motion vectors map a pixel from the current frame to its
+  position in the previous frame"; Intel SR guide, Motion Vectors
+  section). The inverted sign caused ghosting on every moving frame.
+- **XeSS now receives NDC-unit motion correctly** — both XeSS adapters
+  initialize with `XESS_INIT_FLAG_USE_NDC_VELOCITY` (1<<4). Intel's
+  default velocity unit is pixels; reading NDC vectors without the flag
+  made motion ~1000× too small.
+- **`pipeline.enable_fsr` default** — `main.cpp` overrode the on-by-default
+  config global with a `false` fallback; FSR (the vendor-neutral
+  upscaler) is now consistently on unless explicitly disabled.
+- **`renderer.sharpen` is now actually consumed** — the key existed in
+  config defaults but was never parsed; the FSR backend's RCAS strength
+  now comes from it instead of a hardcoded 0.75.
 - **Wrong DXGI format IDs in hook payloads.** D3D9/OpenGL hooks published
   `0x15` (=`R32_FLOAT_X8X24_TYPELESS`) as BGRA8 color and `0x29`/`0x22` as
   R32F/RG16F depth/motion; DXGI published `0x29`/`0x22` too. All now use the

@@ -52,6 +52,7 @@ bool Pipeline::Initialize(graphics::IGraphicsDevice& device,
     // (passes will return Skipped gracefully).
     depth_provider_.Initialize(device, input_res.width, input_res.height);
     motion_pass_.Initialize(device, input_res.width, input_res.height);
+    optical_flow_pass_.Initialize(device, input_res.width, input_res.height);
     disocclusion_pass_.Initialize(device, input_res.width, input_res.height);
     reactive_pass_.Initialize(device, input_res.width, input_res.height);
 
@@ -127,6 +128,18 @@ void Pipeline::BuildGraph() {
                        core::ResourceAccess::ReadDepth, core::ResourceAccess::WriteMotion,
                        [this](core::FrameContext& fc, graphics::ICommandContext& cmd) -> core::PassResult {
             return motion_pass_.Execute(fc, cmd);
+        }, core::PassPolicy::Optional);
+
+        // Fallback motion source (audit #20): optical flow runs only when
+        // reprojection could not produce motion (no camera matrices — DXGI
+        // games, shaders-only GL games). It estimates motion from color
+        // against the committed history and publishes the same NDC
+        // convention, so downstream consumers are unaffected.
+        graph_.AddPass(core::PassType::MotionReproject, "OpticalFlowFallback",
+                       core::FrameValidity{ true, true, false, false, false, false, false, false },
+                       core::ResourceAccess::ReadColor, core::ResourceAccess::WriteMotion,
+                       [this](core::FrameContext& fc, graphics::ICommandContext& cmd) -> core::PassResult {
+            return optical_flow_pass_.Execute(fc, cmd, history_mgr_.GetCurrentHistoryTexture());
         }, core::PassPolicy::Optional);
     }
 

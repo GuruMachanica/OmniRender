@@ -34,12 +34,6 @@ std::atomic<bool> g_use_tonemap { true };
 
 } // namespace
 
-// Forward declaration from tonemap_neural.cpp. The current build
-// only ships the bounded compute tonemap; a TensorRT-based path
-// will live alongside it in a follow-up release.
-bool InitializeNeuralTonemap();
-void DispatchNeuralTonemap(ID3D11DeviceContext* ctx, UINT width, UINT height);
-
 int InitializePipeline() {
     int rc = InitializeProcessing();
     if (rc < 0) {
@@ -60,9 +54,6 @@ int InitializePipeline() {
         }
     }
 
-    if (!InitializeNeuralTonemap()) {
-        OMNI_LOG_WARN("tonemap init failed; running without tonemap");
-    }
     OMNI_LOG_INFO("pipeline enabled (bounded reconstruct=%d upscale=%d tonemap=%d fsr=%d dlss=%d xess=%d rt=%d)",
                   omnirender::config::g_enable_reconstruction,
                   omnirender::config::g_enable_upscale,

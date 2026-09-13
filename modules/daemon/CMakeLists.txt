@@ -12,8 +12,6 @@ add_executable(OmniRenderDaemon
     hw_negotiator.cpp
     ipc_server.cpp
     interop_d3d11.cpp
-    optical_flow.cpp
-    tonemap_neural.cpp
     pipeline.cpp
     processing.cpp
     history_manager.cpp
@@ -92,6 +90,7 @@ if(OMNIRENDER_BUILD_CSO)
         # and core::temporal::DepthProvider via GetShaderPath().
         set(CORE_TEMPORAL_SHADER_HLSL
             "${CMAKE_SOURCE_DIR}/shaders/temporal/MotionReproject.hlsl"
+            "${CMAKE_SOURCE_DIR}/shaders/temporal/OpticalFlow.hlsl"
             "${CMAKE_SOURCE_DIR}/shaders/temporal/Disocclusion.hlsl"
             "${CMAKE_SOURCE_DIR}/shaders/temporal/ReactiveMask.hlsl"
             "${CMAKE_SOURCE_DIR}/shaders/temporal/DepthLinearize.hlsl")

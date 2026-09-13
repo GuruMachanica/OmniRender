@@ -6,6 +6,7 @@
 #include "../core/temporal/HistoryManager.h"
 #include "../core/temporal/DepthProvider.h"
 #include "../core/temporal/MotionReprojectionPass.h"
+#include "../core/temporal/OpticalFlowPass.h"
 #include "../core/temporal/DisocclusionPass.h"
 #include "../core/temporal/ReactiveMaskPass.h"
 #include "../core/frame/FrameContext.h"
@@ -51,7 +52,7 @@ public:
     // by value — HistoryManager::GetCurrentHistoryTexture() is itself a
     // by-value API, and GpuTexture is a cheap shared_ptr wrapper.
     [[nodiscard]] core::GpuTexture GetDebugDepthLinear() const noexcept { return depth_provider_.GetLinearDepth(); }
-    [[nodiscard]] core::GpuTexture GetDebugMotion() const noexcept { return motion_pass_.GetOutput(); }
+    [[nodiscard]] core::GpuTexture GetDebugMotion() const noexcept { return motion_pass_.GetOutput().IsValid() ? motion_pass_.GetOutput() : optical_flow_pass_.GetOutput(); }
     [[nodiscard]] core::GpuTexture GetDebugReactive() const noexcept { return reactive_pass_.GetOutput(); }
     [[nodiscard]] core::GpuTexture GetDebugDisocclusion() const noexcept { return disocclusion_pass_.GetOutput(); }
     [[nodiscard]] core::GpuTexture GetDebugHistory() const noexcept { return history_mgr_.GetCurrentHistoryTexture(); }
@@ -66,6 +67,7 @@ private:
     core::HistoryManager                               history_mgr_;
     core::temporal::DepthProvider                      depth_provider_;
     core::temporal::MotionReprojectionPass             motion_pass_;
+    core::temporal::OpticalFlowPass                    optical_flow_pass_;
     core::temporal::DisocclusionPass                   disocclusion_pass_;
     core::temporal::ReactiveMaskPass                   reactive_pass_;
     std::shared_ptr<backends::IReconstructionBackend>  reconstruction_backend_;

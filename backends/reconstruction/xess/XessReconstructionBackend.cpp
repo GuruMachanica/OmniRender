@@ -34,14 +34,18 @@ constexpr int32_t kXessQualityBalanced = 102;
 constexpr int kXessResultSuccess = 0;
 
 // xess_init_flags (xess.h):
-//  - LDR_INPUT_COLOR: the hook captures final (tonemapped) UNORM backbuffer
-//    data, which is LDR by definition. Intel's guide requires the flag for
-//    LDR input and recommends exposure = 1.0 with no auto-exposure (we pass
-//    exposure_scale = 1.0 in Execute).
+//  - LDR_INPUT_COLOR (1<<6): the hook captures final (tonemapped) UNORM
+//    backbuffer data, which is LDR by definition. Intel's guide requires the
+//    flag for LDR input and recommends exposure = 1.0 with no auto-exposure
+//    (we pass exposure_scale = 1.0 in Execute).
+//  - USE_NDC_VELOCITY (1<<4): the pipeline's motion passes emit NDC-unit
+//    motion vectors, not pixels (Intel's default velocity unit). Without
+//    this flag XeSS would read NDC motion as pixel motion — effectively
+//    ~1000x too small, causing ghosting.
 //  - No HIGH_RES_MV: we supply low-res MVs + depth and let XeSS dilate.
 //  - No INVERTED_DEPTH: DepthProvider linearizes to near=0 (smaller = closer,
 //    XeSS's default convention) regardless of the game's raw depth order.
-constexpr uint32_t kXessInitFlags = 1u << 6;  // XESS_INIT_FLAG_LDR_INPUT_COLOR
+constexpr uint32_t kXessInitFlags = (1u << 6) | (1u << 4);
 
 const char* XessResultString(int result) {
     switch (result) {
@@ -273,13 +277,14 @@ ReconstructionResult XessReconstructionBackend::Execute(core::FrameContext& fc,
         return { {}, {}, false };
     }
 
-    // Motion-vector contract (Intel SR guide, "Motion Vectors" + "Velocity
-    // Scale"): XeSS expects screen-space motion in PIXELS from the current
-    // frame to the previous frame, and its default velocity scale is 1.0 =
-    // pixels — exactly the runtime pipeline's MV convention, so no
-    // xessSetVelocityScale call is needed. Jitter is passed in the
-    // [-0.5, 0.5] pixel contract. Depth: XeSS's default is "smaller = closer",
-    // which is what DepthProvider's linearized [0,1] output produces.
+    // Motion-vector contract (Intel SR guide, "Motion Vectors"): XeSS's
+    // default velocity unit is PIXELS from the current frame to the previous
+    // frame. The pipeline's motion passes emit NDC-unit vectors in that same
+    // direction, so the context is initialized with
+    // XESS_INIT_FLAG_USE_NDC_VELOCITY and NO velocity scale is needed
+    // (default 1.0). Jitter is passed in the [-0.5, 0.5] pixel contract.
+    // Depth: XeSS's default is "smaller = closer", which is what
+    // DepthProvider's linearized [0,1] output produces.
     XessD3D11ExecuteParams params{};
     params.pColorTexture               = color_res;
     params.pVelocityTexture            = motion_res;

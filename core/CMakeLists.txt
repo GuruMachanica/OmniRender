@@ -26,6 +26,8 @@ add_library(OmniRenderCore STATIC
     temporal/DepthProvider.cpp
     temporal/MotionReprojectionPass.h
     temporal/MotionReprojectionPass.cpp
+    temporal/OpticalFlowPass.h
+    temporal/OpticalFlowPass.cpp
     temporal/DisocclusionPass.h
     temporal/DisocclusionPass.cpp
     temporal/ReactiveMaskPass.h

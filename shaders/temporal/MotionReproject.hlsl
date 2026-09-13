@@ -41,8 +41,13 @@ void CSMain(uint3 id : SV_DispatchThreadID) {
 
     // Project to previous frame clip space.
     float4 prevClip = mul(float4(worldPos.xyz, 1.0), g_PrevViewProj);
+    // Motion convention (pipeline-wide): CURRENT frame -> PREVIOUS frame, in
+    // NDC units. This matches NVIDIA DLSS ("motion vectors map a pixel from
+    // the current frame to its position in the previous frame") and Intel
+    // XeSS with XESS_INIT_FLAG_USE_NDC_VELOCITY, both of which the
+    // reconstruction backends consume.
     float2 prevNDC  = prevClip.xy / prevClip.w;
 
-    // Motion vector = current NDC - previous NDC.
-    u_Motion[id.xy] = float2(ndcX - prevNDC.x, ndcY - prevNDC.y);
+    // Motion vector = previous NDC - current NDC (current -> previous).
+    u_Motion[id.xy] = float2(prevNDC.x - ndcX, prevNDC.y - ndcY);
 }
