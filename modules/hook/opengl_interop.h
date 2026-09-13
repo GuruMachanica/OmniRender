@@ -61,4 +61,7 @@ void ShutdownGLDepthBlock();
 bool QueryGLCameraMatrices(float out_view_proj[16], float out_prev_view_proj[16],
                            float* out_near, float* out_far);
 
+// Checks if hardware zero-copy interop is currently active.
+bool IsGLInteropActive();
+
 }  // namespace omnirender::hook
