@@ -81,6 +81,16 @@ jobs:
           if (Test-Path "build32\modules\hook\Release\omnirender-hook.dll") {
             Copy-Item "build32\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x86\omnirender-hook32.dll"
             Copy-Item "build32\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x86\d3d9.dll"
+            Copy-Item "build32\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x86\dxgi.dll"
+            Copy-Item "build32\modules\hook\Release\omnirender-hook.dll" "$dist\hooks\x86\opengl32.dll"
+          }
+
+          # Launcher: deploy proxies (PE-arch matched), start daemon, resume game.
+          if (Test-Path "build\tools\launcher\Release\OmniRenderLaunch.exe") {
+            Copy-Item "build\tools\launcher\Release\OmniRenderLaunch.exe" "$dist\"
+          } elseif (Test-Path "build\tools\launcher\Release\OmniRenderLaunch\OmniRenderLaunch.exe") {
+            # Some CMake generators nest multi-source targets one level deeper.
+            Copy-Item "build\tools\launcher\Release\OmniRenderLaunch\OmniRenderLaunch.exe" "$dist\"
           }
 
           # Copy compiled HLSL shader bytecode
@@ -101,9 +111,12 @@ jobs:
           $required = @(
             "$dist\OmniRenderControlPanel.exe",
             "$dist\OmniRenderDaemon.exe",
+            "$dist\OmniRenderLaunch.exe",
             "$dist\hooks\x64\omnirender-hook.dll",
             "$dist\hooks\x86\omnirender-hook32.dll",
             "$dist\hooks\x86\d3d9.dll",
+            "$dist\hooks\x86\dxgi.dll",
+            "$dist\hooks\x86\opengl32.dll",
             "$dist\hooks\x64\dxgi.dll",
             "$dist\LICENSE",
             "$dist\README.md",

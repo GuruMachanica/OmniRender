@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -85,6 +86,43 @@ int WriteDefaultConfig(const std::wstring& config_path) {
     ::WriteFile(f, kConfig, static_cast<DWORD>(sizeof(kConfig) - 1), &written, nullptr);
     ::CloseHandle(f);
     return 0;
+}
+
+// Read the PE machine type of the game executable so the launcher picks the
+// proxy DLLs matching the game's bitness. Returns 0x014c (I386, 32-bit),
+// 0x8664 (AMD64), or 0 when unknown.
+uint16_t ReadPEMachine(const std::wstring& exe) {
+    std::FILE* f = nullptr;
+    if (_wfopen_s(&f, exe.c_str(), L"rb") != 0 || !f) return 0;
+    uint8_t dos[2] = {};
+    if (std::fread(dos, 1, 2, f) != 2 || dos[0] != 'M' || dos[1] != 'Z') {
+        std::fclose(f); return 0;
+    }
+    if (std::fseek(f, 0x3C, SEEK_SET) != 0) { std::fclose(f); return 0; }
+    uint32_t pe_off = 0;
+    if (std::fread(&pe_off, 4, 1, f) != 1) { std::fclose(f); return 0; }
+    if (std::fseek(f, static_cast<long>(pe_off), SEEK_SET) != 0) { std::fclose(f); return 0; }
+    uint8_t pe_sig[4] = {};
+    if (std::fread(pe_sig, 1, 4, f) != 4 || pe_sig[0] != 'P' || pe_sig[1] != 'E') {
+        std::fclose(f); return 0;
+    }
+    uint16_t machine = 0;
+    if (std::fread(&machine, 2, 1, f) != 1) machine = 0;
+    std::fclose(f);
+    return machine;  // 0x014c = I386 (32-bit), 0x8664 = AMD64 (64-bit)
+}
+
+// Directories searched for proxy DLLs, most specific first: the launcher's
+// own directory, then the arch-matched hooks\ subfolder of the release
+// layout, then both arch folders as a fallback.
+std::vector<std::wstring> ProxySearchDirs(const std::wstring& exe_dir, uint16_t machine) {
+    std::vector<std::wstring> dirs{ exe_dir };
+    const wchar_t* primary = (machine == 0x014c) ? L"hooks\\x86"
+                           : (machine == 0x8664) ? L"hooks\\x64" : nullptr;
+    if (primary) dirs.push_back(JoinPath(exe_dir, primary));
+    dirs.push_back(JoinPath(exe_dir, L"hooks\\x86"));
+    dirs.push_back(JoinPath(exe_dir, L"hooks\\x64"));
+    return dirs;
 }
 
 // Drop one proxy next to the game exe, backing up an existing original.
@@ -145,14 +183,26 @@ int wmain(int argc, wchar_t** argv) {
         return 3;
     }
 
+    // Match the proxy DLL bitness to the game: a 32-bit process cannot load
+    // a 64-bit d3d9.dll and vice versa. Legacy titles (PoP: The Two Thrones,
+    // Jade engine, 2005) are I386; release layouts put them in hooks\\x86.
+    const uint16_t machine = ReadPEMachine(game);
+    const wchar_t* arch = (machine == 0x014c) ? L"x86 (32-bit)"
+                        : (machine == 0x8664) ? L"x64 (64-bit)" : L"unknown";
+    std::fwprintf(stdout, L"[OmniRender] game architecture: %s\n", arch);
+
     // ---- 1. Config ---------------------------------------------------------
     WriteDefaultConfig(config);
 
     // ---- 2. Proxy deployment ----------------------------------------------
+    const std::vector<std::wstring> search_dirs = ProxySearchDirs(exe_dir, machine);
     for (const wchar_t* proxy : kProxies) {
-        const std::wstring src = JoinPath(exe_dir, proxy);
         const std::wstring dst = JoinPath(game_dir, proxy);
-        const int rc = DeployProxy(src, dst);
+        int rc = 1;
+        for (const std::wstring& dir : search_dirs) {
+            rc = DeployProxy(JoinPath(dir, proxy), dst);
+            if (rc <= 0) break;  // deployed, or a hard failure
+        }
         if (rc < 0) return 3;
         if (rc == 0) {
             std::fwprintf(stdout, L"[OmniRender] deployed %s -> %s\n",
